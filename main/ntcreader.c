@@ -61,7 +61,7 @@ static void ntc_reader(void* arg)
             sum = 0;
             temperature = convert(avg);
             float diff = fabs(prev - temperature);
-            if (diff >= 0.10)
+            if (diff >= 0.02)
             {
                 prev = temperature;
                 struct measurement meas;

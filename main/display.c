@@ -59,10 +59,8 @@ void display_show(float f1, float f2)
 
     sprintf(buff,"%02.02f",f1);
     max7219_draw_text_7seg(&dev, 4, buff);    
-    printf("display %s : ", buff);
     sprintf(buff,"%02.02f",f2);
     max7219_draw_text_7seg(&dev, 0, buff);
-    printf("%s\n", buff);
 }
 
 void display_close(void)

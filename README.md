@@ -12,4 +12,4 @@ second interval.
 2. Uses electricity stock price, which is got from internet, via a mqtt topic. Heating can be done only
    during cheap hours.
 
-4. Sends its data to mqtt server, so it's behavior is easily reported.
+3. Sends its data to mqtt server, so it's behavior is easily reported.

@@ -28,6 +28,7 @@ extern uint16_t sensorerrors;
 #define SETUP_GPIO         CONFIG_SETUPLED_GPIO
 #define WLANSTATUS_GPIO    CONFIG_WLANSTATUS_GPIO
 #define MQTTSTATUS_GPIO    CONFIG_MQTTSTATUS_GPIO
+#define HEATER_GPIO        22
 #define MIN_EPOCH   1650000000
 
 #endif

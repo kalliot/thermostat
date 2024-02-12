@@ -33,6 +33,8 @@
 #include "flashmem.h"
 #include "display.h"
 #include "ntcreader.h"
+#include "heater.h"
+#include "pidcontroller.h"
 #include "mqtt_client.h"
 
 #include "apwebserver/server.h"
@@ -399,9 +401,11 @@ void app_main(void)
         factoryreset_init();
         wifi_connect(comminfo->ssid, comminfo->password);
         evt_queue = xQueueCreate(10, sizeof(struct measurement));
+        
         temperatures_init(TEMP_BUS, chipid);
         ntc_init(chipid);
-
+        heater_init(15000, 10);
+        pidcontroller_init(10, 10, 2.0, 0.05, 0.1);
         esp_mqtt_client_handle_t client = mqtt_app_start(chipid);
         sntp_start();
         ESP_LOGI(TAG, "[APP] All init done, app_main, last line.");
@@ -424,13 +428,12 @@ void app_main(void)
         float ntc = 0.0;
         float ds = 0.0;
 
+        pidcontroller_target(24.0);
         while (1)
         {
             struct measurement meas;
-            // send statistics after 4 hours, if nothing happens.
-            // this is typical if we have only slow changing state sensor
 
-            if(xQueueReceive(evt_queue, &meas, STATISTICS_INTERVAL * 1000 / portTICK_PERIOD_MS)) {
+            if(xQueueReceive(evt_queue, &meas, 10 * 1000 / portTICK_PERIOD_MS)) {
                 time(&now);
                 uint16_t qcnt = uxQueueMessagesWaiting(evt_queue);
                 if (started < MIN_EPOCH)
@@ -451,6 +454,7 @@ void app_main(void)
                         ntc = meas.data.temperature;
                         ntc_send(comminfo->mqtt_prefix, &meas, client);
                         display_show(ntc, ds);
+                        heater_setlevel(pidcontroller_tune(ntc));
                     break;
 
                     case TEMPERATURE:
@@ -465,9 +469,7 @@ void app_main(void)
             }
             else
             {   // timeout
-                time(&now);
-                sendStatistics(client, chipid, now);
-                prevStatsTs = now;
+                heater_setlevel(pidcontroller_tune(ntc));
             }
         }
     }
