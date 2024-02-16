@@ -6,6 +6,7 @@
 enum meastype
 {
     NTC,
+    HEATER,
     TEMPERATURE
 };
 

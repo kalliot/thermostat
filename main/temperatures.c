@@ -18,8 +18,7 @@
 #include "mqtt_client.h"
 #include "thermostat.h"
 
-// one gpio can handle max 8 onewire sensors.
-#define MAX_SENSORS 8
+#define MAX_SENSORS 2
 #define SENSOR_NAMELEN 17
 #define NO_CHANGE_INTERVAL 900
 

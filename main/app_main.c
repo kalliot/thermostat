@@ -82,6 +82,7 @@ char jsondata[256];
 uint16_t sendcnt = 0;
 
 static const char *TAG = "SENSORSET";
+static bool isConnected = false;
 static uint16_t connectcnt = 0;
 static uint16_t disconnectcnt = 0;
 uint16_t sensorerrors = 0;
@@ -127,6 +128,7 @@ static void mqtt_event_handler(void *handler_args, esp_event_base_t base, int32_
     switch ((esp_mqtt_event_id_t)event_id) {
     case MQTT_EVENT_CONNECTED:
         ESP_LOGI(TAG, "MQTT_EVENT_CONNECTED");
+        isConnected = true;
         printf("subscribing topic %s\n", readTopic);
         msg_id = esp_mqtt_client_subscribe(client, readTopic, 0);
         ESP_LOGI(TAG, "sent subscribe successful, msg_id=%d", msg_id);
@@ -405,7 +407,7 @@ void app_main(void)
         temperatures_init(TEMP_BUS, chipid);
         ntc_init(chipid);
         heater_init(15000, 10);
-        pidcontroller_init(10, 10, 2.0, 0.05, 0.1);
+        pidcontroller_init(chipid, 10, 10, 2.0, 0.05, 0.1);
         esp_mqtt_client_handle_t client = mqtt_app_start(chipid);
         sntp_start();
         ESP_LOGI(TAG, "[APP] All init done, app_main, last line.");
@@ -421,14 +423,20 @@ void app_main(void)
         // It takes some time to get correct timestamp from ntp.
         time(&started);
         prevStatsTs = now = started;
-
-        sendStatistics(client, chipid, now);
         printf("gpios: mqtt=%d wlan=%d\n",MQTTSTATUS_GPIO,WLANSTATUS_GPIO);
+        pidcontroller_target(24.0);
+
+        while (!isConnected)
+        {
+            printf("waiting to be connected..\n");
+            vTaskDelay(500 / portTICK_PERIOD_MS);
+        }
+        printf("Connected\n");
+        sendStatistics(client, chipid, now);
 
         float ntc = 0.0;
         float ds = 0.0;
 
-        pidcontroller_target(24.0);
         while (1)
         {
             struct measurement meas;
@@ -463,6 +471,10 @@ void app_main(void)
                         display_show(ntc, ds);
                     break;
 
+                    case HEATER:
+                        pidcontroller_send(comminfo->mqtt_prefix, &meas, client);
+                    break;
+
                     default:
                         printf("unknown data type\n" );
                 }
@@ -474,5 +486,6 @@ void app_main(void)
         }
     }
     display_close();
+    heater_close();
     ntc_close();
 }
