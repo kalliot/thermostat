@@ -111,7 +111,7 @@ bool temperature_send(char *prefix, struct measurement *data, esp_mqtt_client_ha
     gpio_set_level(BLINK_GPIO, true);
 
     static char *datafmt = "{\"dev\":\"%x%x%x\",\"sensor\":\"%s\",\"id\":\"temperature\",\"value\":%.02f,\"ts\":%jd,\"unit\":\"C\"}";
-    sprintf(temperatureTopic,"%s%x%x%x/parameters/temperature/%s", prefix, chipid[3], chipid[4], chipid[5], sensors[data->gpio].sensorname);
+    sprintf(temperatureTopic,"%s/thermostat%x%x%x/parameters/temperature/%s", prefix, chipid[3], chipid[4], chipid[5], sensors[data->gpio].sensorname);
 
     sprintf(jsondata, datafmt,
                 chipid[3],chipid[4],chipid[5],

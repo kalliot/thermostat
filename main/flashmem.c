@@ -102,6 +102,46 @@ void flash_write(char *name, uint16_t value)
     printf((err != ESP_OK) ? "Failed!\n" : "Done\n");
 }
 
+
+float flash_read_float(char *name, float def)
+{
+    esp_err_t err;
+    float ret;
+    uint32_t readval;
+
+    printf("Reading %s from NVS ... ", name);
+    err = nvs_get_u32(nvsh, name , &readval);
+    switch (err) {
+        case ESP_OK:
+            printf("Done, ");
+            printf("%s = %d\n", name, readval);
+            ret = (float) readval / 100.0;
+        break;
+
+        case ESP_ERR_NVS_NOT_FOUND:
+            printf("%s is not initialized yet!\n");
+            ret = def;
+        break;
+
+        default :
+            printf("Error (%d) reading!\n", err);
+            ret = def;
+    }
+    return ret;
+}
+
+
+void flash_write_float(char *name, float value)
+{
+    esp_err_t err;
+    uint32_t writevalue;
+
+    writevalue = value * 100;
+    printf("Updating %s in NVS value = %d... ", name, writevalue);
+    err = nvs_set_u32(nvsh, name, writevalue);
+    printf((err != ESP_OK) ? "Failed!\n" : "Done\n");
+}
+
 void flash_commitchanges(void)
 {
     esp_err_t err;

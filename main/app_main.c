@@ -43,13 +43,13 @@
 extern esp_err_t example_wifi_sta_do_connect(wifi_config_t wifi_config, bool wait);
 extern void example_wifi_start(void);
 
-#define TEMP_BUS 25
-#define STATEINPUT_GPIO 33
-#define STATEINPUT_GPIO2 32
+#define TEMP_BUS              25
+#define STATEINPUT_GPIO       33
+#define STATEINPUT_GPIO2      32
 #define STATISTICS_INTERVAL 1800
-#define PROGRAM_VERSION 0.14
-#define ESP_INTR_FLAG_DEFAULT 0
-
+#define PROGRAM_VERSION     0.01
+#define ESP_INTR_FLAG_DEFAULT  0
+#define HEATER_POWERLEVELS    10
 
 #if CONFIG_EXAMPLE_WIFI_SCAN_METHOD_FAST
 #define EXAMPLE_WIFI_SCAN_METHOD WIFI_FAST_SCAN
@@ -73,6 +73,23 @@ struct netinfo {
     char *mqtt_prefix;
 };
 
+struct {
+    int pwmlen;
+    int interval;
+    float target;
+    float diff;
+    float tempdiverge;
+    float speeddiverge;
+} setup = { 15, 10, 24.0, 2.0, 0.05, 0.1};
+
+struct specialTemperature
+{
+    char timestr[11];
+    float price;
+};
+
+struct specialTemperature *hitemp = NULL;
+struct specialTemperature *lotemp = NULL;
 
 // globals
 
@@ -88,17 +105,205 @@ static uint16_t disconnectcnt = 0;
 uint16_t sensorerrors = 0;
 
 static char statisticsTopic[64];
-static char readTopic[64];
+static char setupTopic[64];
+static char elpriceTopic[64];
 static time_t started;
 static uint16_t maxQElements = 0;
 static int retry_num = 0;
 
 
-
-
 static void sendStatistics(esp_mqtt_client_handle_t client, uint8_t *chipid, time_t now);
 static void sendSetup(esp_mqtt_client_handle_t client, uint8_t *chipid);
 static void sendInfo(esp_mqtt_client_handle_t client, uint8_t *chipid);
+
+
+static char *getJsonStr(cJSON *js, char *name)
+{
+    cJSON *item = cJSON_GetObjectItem(js, name);
+    if (item != NULL)
+    {
+        if (cJSON_IsString(item))
+        {
+            return item->valuestring;
+        }
+        else printf("%s is not a string", name);
+    }
+    else printf("%s not found from json\n", name);
+    return "\0";
+}
+
+
+static bool getJsonInt(cJSON *js, char *name, int *val)
+{
+    bool ret = false;
+
+    cJSON *item = cJSON_GetObjectItem(js, name);
+    if (item != NULL)
+    {
+        if (cJSON_IsNumber(item))
+        {
+            if (item->valueint != *val)
+            {
+                ret = true;
+                *val = item->valueint;
+            }
+            else printf("%s is not changed\n", name);
+        }
+        else printf("%s is not a number", name);
+    }
+    else printf("%s not found from json\n", name);
+    return ret;
+}
+
+
+static bool getJsonFloat(cJSON *js, char *name, float *val)
+{
+    bool ret = false;
+
+    cJSON *item = cJSON_GetObjectItem(js, name);
+    if (item != NULL)
+    {
+        if (cJSON_IsNumber(item))
+        {
+            if (item->valuedouble != *val)
+            {
+                ret = true;
+                *val = item->valuedouble;
+                printf("received variable %s:%2.2f\n", name, item->valuedouble);
+            }
+            else printf("%s is not changed\n", name);
+        }
+        else printf("%s is not a number\n", name);
+    }
+    else printf("%s not found from json\n", name);
+    return ret;
+}
+
+
+static struct specialTemperature *jsonToHiLoTable(cJSON *js, char *name, int *cnt, struct specialTemperature *tempArr)
+{
+    cJSON *item = cJSON_GetObjectItem(js, name);
+    int itemCnt=0;
+
+    if (item != NULL)
+    {
+        if (cJSON_IsArray(item))
+        {
+            itemCnt = cJSON_GetArraySize(item);
+            *cnt = itemCnt;
+            if (tempArr != NULL) free(tempArr);
+            tempArr = (struct specialTemperature *) malloc(itemCnt * sizeof(struct specialTemperature));
+            if (tempArr != NULL)
+            {
+                for (int i=0;i<itemCnt;i++)
+                {
+                    cJSON *elem = cJSON_GetArrayItem(item, i);
+                    if (elem != NULL)
+                    {
+                        cJSON *jstime = cJSON_GetObjectItem(elem, "time");
+                        if (jstime != NULL)
+                        {
+                            if (cJSON_IsString(jstime))
+                            {
+                                strcpy(tempArr[i].timestr,jstime->valuestring);
+                            }
+                        }
+
+                        cJSON *jsprice = cJSON_GetObjectItem(elem, "price");
+                        if (jsprice != NULL)
+                        {
+                            if (cJSON_IsNumber(jsprice))
+                            {
+                                tempArr[i].price = jsprice->valuedouble;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    return tempArr;
+}
+
+
+static bool handleJson(esp_mqtt_event_handle_t event)
+{
+    cJSON *root = cJSON_Parse(event->data);
+    bool reinit_needed = false;
+    bool ret = false;
+
+    if (root != NULL)
+    {   // heater config
+        if (!strcmp(getJsonStr(root,"id"),"setup"))
+        {
+            printf("got setup\n");
+            ret = true;
+            if (getJsonInt(root,"pwmlen", &setup.pwmlen))
+            {
+                heater_reconfig(setup.pwmlen, 10);
+                flash_write("pwmlen", setup.pwmlen);
+            }
+            // pidcontroller config
+            if (getJsonInt(root, "interval", &setup.interval))
+            {
+                flash_write("interval", setup.interval);
+                reinit_needed = true;
+            }
+            if (getJsonFloat(root, "diff", &setup.diff))
+            {
+                flash_write_float("diff", setup.diff);
+                reinit_needed = true;
+            }
+            if (getJsonFloat(root, "tempdiverge", &setup.tempdiverge))
+            {
+                flash_write_float("tempdiverge", setup.tempdiverge);
+                reinit_needed = true;
+            }
+            if (getJsonFloat(root, "speeddiverge", &setup.speeddiverge))
+            {
+                flash_write_float("speeddiverge", setup.speeddiverge);
+                reinit_needed = true;
+            }
+            if (getJsonFloat(root, "target", &setup.target))
+            {
+                pidcontroller_target(setup.target);
+                flash_write_float("target", setup.target);
+            }
+            if (reinit_needed) pidcontroller_reinit(setup.interval, HEATER_POWERLEVELS,
+                                                    setup.diff, setup.tempdiverge, setup.speeddiverge);
+            flash_commitchanges();
+        }
+        else if (!strcmp(getJsonStr(root,"id"),"awhightemp"))
+        {
+            printf("got elprice hightemp\n");
+            int cnt;
+            hitemp = jsonToHiLoTable(root,"values", &cnt, hitemp);
+            if (cnt > 0)
+            {
+                for (int i=0;i<cnt;i++)
+                {
+                    printf("time=%s price=%f\n",hitemp[i].timestr, hitemp[i].price);
+                }
+            }
+        }
+        else if (!strcmp(getJsonStr(root,"id"),"awlowtemp"))
+        {
+            printf("got elprice lowtemp\n");
+            int cnt;
+            lotemp = jsonToHiLoTable(root,"values", &cnt, lotemp);
+            if (cnt > 0)
+            {
+                for (int i=0;i<cnt;i++)
+                {
+                    printf("time=%s price=%f\n",lotemp[i].timestr, lotemp[i].price);
+                }
+            }
+        }
+        cJSON_Delete(root);
+    }
+    return ret;
+}
+
 
 static void log_error_if_nonzero(const char *message, int error_code)
 {
@@ -122,20 +327,25 @@ static void mqtt_event_handler(void *handler_args, esp_event_base_t base, int32_
     ESP_LOGD(TAG, "Event dispatched from event loop base=%s, event_id=%d", base, event_id);
     esp_mqtt_event_handle_t event = event_data;
     esp_mqtt_client_handle_t client = event->client;
+
     int msg_id;
-    
 
     switch ((esp_mqtt_event_id_t)event_id) {
     case MQTT_EVENT_CONNECTED:
-        ESP_LOGI(TAG, "MQTT_EVENT_CONNECTED");
-        isConnected = true;
-        printf("subscribing topic %s\n", readTopic);
-        msg_id = esp_mqtt_client_subscribe(client, readTopic, 0);
-        ESP_LOGI(TAG, "sent subscribe successful, msg_id=%d", msg_id);
-        gpio_set_level(MQTTSTATUS_GPIO, true);
-        sendInfo(client, (uint8_t *) handler_args);
-        sendSetup(client, (uint8_t *) handler_args);
-        connectcnt++;
+            ESP_LOGI(TAG, "MQTT_EVENT_CONNECTED");
+            isConnected = true;
+            printf("subscribing topics\n");
+
+            msg_id = esp_mqtt_client_subscribe(client, setupTopic , 0);
+            ESP_LOGI(TAG, "sent subscribe %s succesful, msg_id=%d", setupTopic, msg_id);
+
+            msg_id = esp_mqtt_client_subscribe(client, elpriceTopic , 0);
+            ESP_LOGI(TAG, "sent subscribe %s successful, msg_id=%d", elpriceTopic, msg_id);
+
+            gpio_set_level(MQTTSTATUS_GPIO, true);
+            sendInfo(client, (uint8_t *) handler_args);
+            sendSetup(client, (uint8_t *) handler_args);
+            connectcnt++;
         break;
 
     case MQTT_EVENT_DISCONNECTED:
@@ -156,18 +366,7 @@ static void mqtt_event_handler(void *handler_args, esp_event_base_t base, int32_
         break;
 
     case MQTT_EVENT_DATA:
-        {
-            ESP_LOGI(TAG, "MQTT_EVENT_DATA");
-            printf("TOPIC=%.*s\r\n", event->topic_len, event->topic);
-            printf("DATA=%.*s\r\n", event->data_len, event->data);
-            cJSON *root;
-            root = cJSON_Parse(event->data);
-            uint16_t interval = cJSON_GetObjectItem(root,"interval")->valueint;
-            printf("interval=%d\n",interval);
-            flash_write("interval", interval);
-            flash_commitchanges();
-            cJSON_Delete(root);
-        }
+        if (handleJson(event)) sendSetup(client, (uint8_t *) handler_args);
         break;
 
     case MQTT_EVENT_ERROR:
@@ -233,9 +432,9 @@ static void sendInfo(esp_mqtt_client_handle_t client, uint8_t *chipid)
 {
     gpio_set_level(BLINK_GPIO, true);
 
-    char infoTopic[32];
+    char infoTopic[42];
 
-    sprintf(infoTopic,"%s%x%x%x/info",
+    sprintf(infoTopic,"%s/thermostat%x%x%x/info",
          comminfo->mqtt_prefix, chipid[3],chipid[4],chipid[5]);
     sprintf(jsondata, "{\"dev\":\"%x%x%x\",\"id\":\"info\",\"memfree\":%d,\"idfversion\":\"%s\",\"progversion\":%.2f, \"tempsensors\":[%s]}",
                 chipid[3],chipid[4],chipid[5],
@@ -253,13 +452,13 @@ static void sendSetup(esp_mqtt_client_handle_t client, uint8_t *chipid)
 {
     gpio_set_level(BLINK_GPIO, true);
 
-    char setupTopic[32];
-    sprintf(setupTopic,"%s%x%x%x/setup",
+    char setupTopic[42];
+    sprintf(setupTopic,"%s/thermostat%x%x%x/setup",
          comminfo->mqtt_prefix, chipid[3],chipid[4],chipid[5]);
-
-    sprintf(jsondata, "{\"dev\":\"%x%x%x\",\"id\":\"setup\",\"interval\":%d }",
+    sprintf(jsondata, "{\"dev\":\"%x%x%x\",\"id\":\"setup\",\"pwmlen\":%d,\"interval\":%d,"
+                      "\"target\":%2.2f,\"diff\":%2.2f,\"tempdiverge\":%2.2f,\"speeddiverge\":%2.2f}",
                 chipid[3],chipid[4],chipid[5],
-                0);
+                setup.pwmlen, setup.interval, setup.target, setup.diff, setup.tempdiverge, setup.speeddiverge);
     esp_mqtt_client_publish(client, setupTopic, jsondata , 0, 0, 1);
     sendcnt++;
     gpio_set_level(BLINK_GPIO, false);
@@ -406,33 +605,42 @@ void app_main(void)
         
         temperatures_init(TEMP_BUS, chipid);
         ntc_init(chipid);
-        heater_init(15000, 10);
-        pidcontroller_init(chipid, 10, 10, 2.0, 0.05, 0.1);
+
+        setup.pwmlen       = flash_read("pwmlen", setup.pwmlen);
+        setup.interval     = flash_read_float("interval", setup.interval);
+        setup.target       = flash_read("target", setup.target);
+        setup.diff         = flash_read_float("diff", setup.diff);
+        setup.tempdiverge  = flash_read_float("tempdiverge", setup.tempdiverge);
+        setup.speeddiverge = flash_read_float("speeddiverge", setup.speeddiverge);
+
+        heater_init(setup.pwmlen, HEATER_POWERLEVELS);
+        pidcontroller_init(chipid,
+                        setup.interval,
+                        HEATER_POWERLEVELS,
+                        setup.diff,
+                        setup.tempdiverge,
+                        setup.speeddiverge);
+        pidcontroller_target(setup.target);
+
         esp_mqtt_client_handle_t client = mqtt_app_start(chipid);
         sntp_start();
         ESP_LOGI(TAG, "[APP] All init done, app_main, last line.");
 
-        sprintf(statisticsTopic,"%s%x%x%x/statistics",
+        sprintf(statisticsTopic,"%s/thermostat%x%x%x/statistics",
             comminfo->mqtt_prefix, chipid[3],chipid[4],chipid[5]);
         printf("statisticsTopic=[%s]\n", statisticsTopic);
 
-        sprintf(readTopic,"%s%x%x%x/setsetup",
+        sprintf(setupTopic,"%s/thermostat%x%x%x/setsetup",
             comminfo->mqtt_prefix, chipid[3],chipid[4],chipid[5]);
+
+        sprintf(elpriceTopic,"%s/elprice/#", comminfo->mqtt_prefix);
 
         // it is very propable, we will not get correct timestamp here.
         // It takes some time to get correct timestamp from ntp.
         time(&started);
         prevStatsTs = now = started;
         printf("gpios: mqtt=%d wlan=%d\n",MQTTSTATUS_GPIO,WLANSTATUS_GPIO);
-        pidcontroller_target(24.0);
-
-        while (!isConnected)
-        {
-            printf("waiting to be connected..\n");
-            vTaskDelay(500 / portTICK_PERIOD_MS);
-        }
-        printf("Connected\n");
-        sendStatistics(client, chipid, now);
+        if (isConnected) sendStatistics(client, chipid, now); // if not connected yet, this will stay in evt_queue.
 
         float ntc = 0.0;
         float ds = 0.0;
@@ -446,14 +654,18 @@ void app_main(void)
                 uint16_t qcnt = uxQueueMessagesWaiting(evt_queue);
                 if (started < MIN_EPOCH)
                 {
-                    prevStatsTs = started = now;
-                    sendStatistics(client, chipid , now);
+                    if (isConnected)
+                    {
+                        prevStatsTs = started = now;
+                        sendStatistics(client, chipid , now);
+                    }
                 }
                 if (qcnt > maxQElements)
                 {
                     maxQElements = qcnt;
                 }
-                if (now - prevStatsTs >= STATISTICS_INTERVAL) {
+                if (now - prevStatsTs >= STATISTICS_INTERVAL && isConnected)
+                {
                     sendStatistics(client, chipid, now);
                     prevStatsTs = now;
                 }
@@ -467,7 +679,7 @@ void app_main(void)
 
                     case TEMPERATURE:
                         ds = meas.data.temperature;
-                        temperature_send(comminfo->mqtt_prefix, &meas, client);
+                        if (isConnected) temperature_send(comminfo->mqtt_prefix, &meas, client);
                         display_show(ntc, ds);
                     break;
 

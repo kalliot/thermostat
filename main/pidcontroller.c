@@ -22,15 +22,22 @@ static float prevValue = 0.0;
 static int tuneValue = 0;
 static char thermostatTopic[64];
 
-void pidcontroller_init(uint8_t *chip, int interval, int max, float diff, float tDiverge, float sDiverge)
+void pidcontroller_reinit(int interval, int max, float diff, float tDiverge, float sDiverge)
 {
-    chipid = chip;
-    time(&prevCheck);
     checkInterval   = interval;
     startDiff       = diff;
     maxTune         = max;
     tempDiverge     = tDiverge;
     speedDiverge    = sDiverge;
+    return;
+}
+
+
+void pidcontroller_init(uint8_t *chip, int interval, int max, float diff, float tDiverge, float sDiverge)
+{
+    chipid = chip;
+    time(&prevCheck);
+    pidcontroller_reinit(interval,max,diff,tDiverge,sDiverge);
     return;
 }
 
@@ -124,7 +131,7 @@ bool pidcontroller_send(char *prefix, struct measurement *data, esp_mqtt_client_
     gpio_set_level(BLINK_GPIO, true);
 
     static char *datafmt = "{\"dev\":\"%x%x%x\",\"id\":\"thermostat\",\"value\":%d,\"ts\":%jd}";
-    sprintf(thermostatTopic,"%s%x%x%x/parameters/thermostat", prefix, chipid[3], chipid[4], chipid[5]);
+    sprintf(thermostatTopic,"%s/thermostat%x%x%x/parameters/thermostat", prefix, chipid[3], chipid[4], chipid[5]);
 
     sprintf(jsondata, datafmt,
                 chipid[3],chipid[4],chipid[5],
