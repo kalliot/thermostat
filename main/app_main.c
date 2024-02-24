@@ -50,6 +50,7 @@ extern void example_wifi_start(void);
 #define PROGRAM_VERSION     0.01
 #define ESP_INTR_FLAG_DEFAULT  0
 #define HEATER_POWERLEVELS    15
+#define NTC_INTERVAL_MS     5000
 
 #if CONFIG_EXAMPLE_WIFI_SCAN_METHOD_FAST
 #define EXAMPLE_WIFI_SCAN_METHOD WIFI_FAST_SCAN
@@ -242,15 +243,17 @@ static bool isInArray(char *str, struct specialTemperature *arr, int cnt)
     return false;
 }
 
+
 static void readSetupJson(cJSON *root)
 {
     bool reinit_needed = false;
 
     if (getJsonInt(root,"pwmlen", &setup.pwmlen))
     {
-        heater_reconfig(setup.pwmlen, 10);
+        heater_reconfig(setup.pwmlen, HEATER_POWERLEVELS);
         flash_write("pwmlen", setup.pwmlen);
     }
+
     // pidcontroller config
     if (getJsonInt(root, "interval", &setup.interval))
     {
@@ -291,7 +294,6 @@ static void readSetupJson(cJSON *root)
 static bool handleJson(esp_mqtt_event_handle_t event)
 {
     cJSON *root = cJSON_Parse(event->data);
-    //bool reinit_needed = false;
     bool ret = false;
 
     if (root != NULL)
@@ -316,19 +318,24 @@ static bool handleJson(esp_mqtt_event_handle_t event)
             char *topicpostfix = &event->topic[event->topic_len - 7];
             if (!memcmp(topicpostfix,"current",7))
             {
+                float newInfluence = 0.0;
                 char *daystr = getJsonStr(root,"day");
                 if (isInArray(daystr, hitemp, hitempcnt))
                 {
                     printf("HITEMP IS ON!\n");
-                    elpriceInfluence = 2.0;
-                    pidcontroller_target(setup.target + elpriceInfluence);
+                    newInfluence = 2.0;
                 }
                 if (isInArray(daystr, lotemp, lotempcnt))
                 {
                     printf("LOTEMP IS ON!\n");
-                    elpriceInfluence = -2.0;
+                    newInfluence = -2.0;
+                }
+                if (newInfluence != elpriceInfluence)
+                {
+                    elpriceInfluence = newInfluence;
                     pidcontroller_target(setup.target + elpriceInfluence);
                 }
+
             }
         }
         cJSON_Delete(root);
@@ -485,6 +492,7 @@ static void sendSetup(esp_mqtt_client_handle_t client, uint8_t *chipid)
     gpio_set_level(BLINK_GPIO, true);
 
     char setupTopic[42];
+
     sprintf(setupTopic,"%s/thermostat/%x%x%x/setup",
          comminfo->mqtt_prefix, chipid[3],chipid[4],chipid[5]);
     sprintf(jsondata, "{\"dev\":\"%x%x%x\",\"id\":\"setup\",\"pwmlen\":%d,\"interval\":%d,"
@@ -637,11 +645,11 @@ void app_main(void)
         evt_queue = xQueueCreate(10, sizeof(struct measurement));
         
         temperatures_init(TEMP_BUS, chipid);
-        ntc_init(chipid);
+        ntc_init(chipid, NTC_INTERVAL_MS);
 
         setup.pwmlen       = flash_read("pwmlen", setup.pwmlen);
-        setup.interval     = flash_read_float("interval", setup.interval);
-        setup.target       = flash_read("target", setup.target);
+        setup.interval     = flash_read("interval", setup.interval);
+        setup.target       = flash_read_float("target", setup.target);
         setup.diff         = flash_read_float("diff", setup.diff);
         setup.tempdiverge  = flash_read_float("tempdiverge", setup.tempdiverge);
         setup.speeddiverge = flash_read_float("speeddiverge", setup.speeddiverge);

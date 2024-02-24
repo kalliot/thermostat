@@ -22,6 +22,7 @@ static float maxSpeed = 30.0;     // max speed increase Celsius per hour.
 static time_t prevCheck;
 static float prevValue = 0.0;
 static int tuneValue = 0;
+static bool overHeatPossibility = false;
 
 static char thermostatTopic[64];
 
@@ -45,6 +46,18 @@ void pidcontroller_init(uint8_t *chip, int interval, int max, float diff, float 
     return;
 }
 
+static void calctune(void)
+{
+    float degrPerStep = startDiff / (float) maxTune;
+    printf("degrPerStep = %f", degrPerStep);
+
+    float diff = target - prevValue;
+    tuneValue += (int) (diff / degrPerStep);
+    if (tuneValue >= (maxTune -3)) overHeatPossibility = true;
+    if (tuneValue >= maxTune) tuneValue = maxTune - 1;
+    if (tuneValue < 0) tuneValue = 0;
+}
+
 // changing the target while running.
 void pidcontroller_target(float newTarget)
 {
@@ -53,16 +66,9 @@ void pidcontroller_target(float newTarget)
         target = newTarget;
 
         if (prevValue == 0.0) return;
-
-        float degrPerStep = startDiff / (float) maxTune;
-        printf("degrPerStep = %f", degrPerStep);
-
-        float diff = target - prevValue;
-        tuneValue += (int) (diff / degrPerStep);
+        calctune();
+        send_changes(tuneValue);
     }    
-    if (tuneValue >= maxTune) tuneValue = maxTune - 1;
-    if (tuneValue < 0) tuneValue = 0;
-    return;
 }
 
 static void send_changes(int newTune)
@@ -92,9 +98,7 @@ int pidcontroller_tune(float measurement)
     time(&now);
     if (prevValue == 0.0) // at startup
     {
-        // TODO: do this with same algorithm as in pidcontrol_target()
-        if (diff > startDiff) tuneValue = maxTune-1;
-        else if (diff > (startDiff / 2)) tuneValue = maxTune / 2;
+        calctune();
         prevCheck = now;
         prevValue = measurement;
         send_changes(tuneValue);
@@ -120,17 +124,23 @@ int pidcontroller_tune(float measurement)
         {                    // don't care are we under target.
             tuneValue--;     // Speed is too high, even we may be under target
             if (diff < 0.0)  // and if over target, decrease more.
-                tuneValue--;
+            {
+                if (overHeatPossibility)
+                {
+                    tuneValue = 0;
+                    overHeatPossibility = false;
+                }
+                else tuneValue--;
+            }
         }
         else
         {
-            if (diff > 0.0) // under target, but too slow -> increase heating
+            if (diff > 0.0 && speed < 0.0) tuneValue++; // under target, needs heating
+            if (diff < 0.0)
             {
-                if (speed <= speedDiverge) tuneValue++; // needs to accelerate
-            }
-            if (diff < 0.0) // over target
-            {
-                if (speed >= speedDiverge * -1.0) tuneValue--; // because we still have speed.
+                tuneValue--; // over target, decrease heating
+                if (speed)
+                    tuneValue--; // over target and still increasing.
             }
         }
     }

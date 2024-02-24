@@ -10,9 +10,14 @@
 #include "mqtt_client.h"
 #include "thermostat.h"
 
+
+#define MEASURES_PER_SAMPLE 10
+
 static adc_oneshot_unit_handle_t adc1_handle;
 static uint8_t *chipid;
 static char temperatureTopic[64];
+static int sampleInterval = 1000;
+
 
 /* TODO: calibrations should be stored in flash */
 static struct {
@@ -54,14 +59,14 @@ static void ntc_reader(void* arg)
     {
         int raw = ntc_read();
         sum += raw;
-        if (++cnt == 10)
+        if (++cnt == MEASURES_PER_SAMPLE)
         {
-            int avg = sum / 10;
+            int avg = sum / MEASURES_PER_SAMPLE;
             cnt = 0;
             sum = 0;
             temperature = convert(avg);
             float diff = fabs(prev - temperature);
-            if (diff >= 0.1)
+            if (diff >= 0.08)
             {
                 prev = temperature;
                 struct measurement meas;
@@ -71,7 +76,7 @@ static void ntc_reader(void* arg)
                 xQueueSend(evt_queue, &meas, 0);
             }
         }
-        vTaskDelay(1000 / portTICK_PERIOD_MS);
+        vTaskDelay(sampleInterval / portTICK_PERIOD_MS);
     }
 }
 
@@ -97,7 +102,7 @@ bool ntc_send(char *prefix, struct measurement *data, esp_mqtt_client_handle_t c
 }
 
 
-void ntc_init(uint8_t *chip)
+void ntc_init(uint8_t *chip, int intervalMs)
 {
     adc_oneshot_unit_init_cfg_t init_config1 = {
         .unit_id = ADC_UNIT_1,
@@ -109,6 +114,7 @@ void ntc_init(uint8_t *chip)
         .atten = ADC_ATTEN_DB_6
     };
     adc_oneshot_config_channel(adc1_handle, ADC_CHANNEL_0, &config);
+    sampleInterval = intervalMs / MEASURES_PER_SAMPLE;
     xTaskCreate(ntc_reader, "ntc reader", 2048, NULL, 10, NULL);
     return;
 }
