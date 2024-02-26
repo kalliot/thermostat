@@ -49,7 +49,7 @@ extern void example_wifi_start(void);
 #define STATISTICS_INTERVAL 1800
 #define PROGRAM_VERSION     0.01
 #define ESP_INTR_FLAG_DEFAULT  0
-#define HEATER_POWERLEVELS    15
+#define HEATER_POWERLEVELS    30
 #define NTC_INTERVAL_MS     5000
 
 #if CONFIG_EXAMPLE_WIFI_SCAN_METHOD_FAST
@@ -195,12 +195,13 @@ static struct specialTemperature *jsonToHiLoTable(cJSON *js, char *name, int *cn
         {
             itemCnt = cJSON_GetArraySize(item);
             // table should be allocated or reallocated, if count of lines differ.
-            if (itemCnt != *cnt && *cnt != 0)
+            if (*cnt == 0 || itemCnt != *cnt) // we alread had a table
             {
                 *cnt = itemCnt;
                 if (tempArr != NULL) free(tempArr);
                 tempArr = (struct specialTemperature *) malloc(itemCnt * sizeof(struct specialTemperature));
             }
+
             if (tempArr != NULL)
             {
                 for (int i=0;i<itemCnt;i++)
@@ -285,11 +286,14 @@ static void readSetupJson(cJSON *root)
     {
         pidcontroller_target(setup.target + elpriceInfluence);
         flash_write_float("target", setup.target);
+        heater_setlevel(pidcontroller_tune(ntc_get_temperature()));
     }
     if (reinit_needed) pidcontroller_reinit(setup.interval, HEATER_POWERLEVELS,
                                             setup.diff, setup.tempdiverge, setup.speeddiverge, setup.maxspeed);
+
     flash_commitchanges();
 }
+
 
 static bool handleJson(esp_mqtt_event_handle_t event)
 {
@@ -323,19 +327,23 @@ static bool handleJson(esp_mqtt_event_handle_t event)
                 if (isInArray(daystr, hitemp, hitempcnt))
                 {
                     printf("HITEMP IS ON!\n");
-                    newInfluence = 2.0;
+                    newInfluence = 1.0;
                 }
-                if (isInArray(daystr, lotemp, lotempcnt))
+                else if (isInArray(daystr, lotemp, lotempcnt))
                 {
                     printf("LOTEMP IS ON!\n");
-                    newInfluence = -2.0;
+                    newInfluence = -1.0;
+                }
+                else
+                {
+                    printf("normal temperature is on\n");
                 }
                 if (newInfluence != elpriceInfluence)
                 {
                     elpriceInfluence = newInfluence;
+                    printf("changing target to %f\n", setup.target + elpriceInfluence);
                     pidcontroller_target(setup.target + elpriceInfluence);
                 }
-
             }
         }
         cJSON_Delete(root);
@@ -384,6 +392,8 @@ static void mqtt_event_handler(void *handler_args, esp_event_base_t base, int32_
             gpio_set_level(MQTTSTATUS_GPIO, true);
             sendInfo(client, (uint8_t *) handler_args);
             sendSetup(client, (uint8_t *) handler_args);
+            ntc_sendcurrent();
+            pidcontroller_send_currenttune();
             connectcnt++;
         break;
 
@@ -643,19 +653,20 @@ void app_main(void)
         factoryreset_init();
         wifi_connect(comminfo->ssid, comminfo->password);
         evt_queue = xQueueCreate(10, sizeof(struct measurement));
-        
+
         temperatures_init(TEMP_BUS, chipid);
-        ntc_init(chipid, NTC_INTERVAL_MS);
 
         setup.pwmlen       = flash_read("pwmlen", setup.pwmlen);
-        setup.interval     = flash_read("interval", setup.interval);
+        setup.interval     = flash_read("interval", setup.interval);  // obsolete
         setup.target       = flash_read_float("target", setup.target);
         setup.diff         = flash_read_float("diff", setup.diff);
         setup.tempdiverge  = flash_read_float("tempdiverge", setup.tempdiverge);
         setup.speeddiverge = flash_read_float("speeddiverge", setup.speeddiverge);
         setup.maxspeed     = flash_read_float("maxspeed", setup.maxspeed);
 
+
         heater_init(setup.pwmlen, HEATER_POWERLEVELS);
+        ntc_init(chipid, NTC_INTERVAL_MS);
         pidcontroller_init(chipid,
                         setup.interval,
                         HEATER_POWERLEVELS,
@@ -692,7 +703,7 @@ void app_main(void)
         {
             struct measurement meas;
 
-            if(xQueueReceive(evt_queue, &meas, 10 * 1000 / portTICK_PERIOD_MS)) {
+            if(xQueueReceive(evt_queue, &meas, 60 * 1000 / portTICK_PERIOD_MS)) {
                 time(&now);
                 uint16_t qcnt = uxQueueMessagesWaiting(evt_queue);
                 if (started < MIN_EPOCH)
@@ -735,7 +746,10 @@ void app_main(void)
                 }
             }
             else
-            {   // timeout
+            { 
+                printf("timeout\n");
+                ntc = ntc_get_temperature();
+                display_show(ntc, ds);
                 heater_setlevel(pidcontroller_tune(ntc));
             }
         }

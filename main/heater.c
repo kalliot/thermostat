@@ -35,13 +35,13 @@ static void activator(void* arg)
             continue;
         }
         if (level == 0)
-            gpio_set_level(HEATER_GPIO, true);
+            gpio_set_level(HEATER_GPIO, false);
         else
         {
             if (slot <= level)
-                gpio_set_level(HEATER_GPIO, false);
-            else
                 gpio_set_level(HEATER_GPIO, true);
+            else
+                gpio_set_level(HEATER_GPIO, false);
         }
         vTaskDelay(slotLen / portTICK_PERIOD_MS);
         slot++;

@@ -21,10 +21,45 @@ static float speedDiverge = 6.0;  // temperature should change at least this muc
 static float maxSpeed = 30.0;     // max speed increase Celsius per hour.
 static time_t prevCheck;
 static float prevValue = 0.0;
+static float prevSpeed = 0.0;
 static int tuneValue = 0;
 static bool overHeatPossibility = false;
 
 static char thermostatTopic[64];
+
+static void calctune(void)
+{
+    float degrPerStep = startDiff / (float) maxTune;
+    printf("--------> degrPerStep = %f", degrPerStep);
+
+    float diff = target - prevValue;
+    tuneValue += (int) (diff / degrPerStep);
+    if (tuneValue >= (maxTune -3)) overHeatPossibility = true;
+    if (tuneValue >= maxTune) tuneValue = maxTune - 1;
+    if (tuneValue < 0) tuneValue = 0;
+    printf("calctune, tune is %d\n", tuneValue);
+}
+
+static void send_changes(int newTune, bool forced)
+{
+    static int prevTune = -1;
+
+    if (prevTune != newTune || forced)
+    {
+
+        struct measurement meas;
+        meas.id = HEATER;
+        meas.gpio = 0;
+        meas.data.count = newTune;
+        xQueueSend(evt_queue, &meas, 0);
+        prevTune = newTune;
+    }
+}
+
+void pidcontroller_send_currenttune(void)
+{
+    send_changes(tuneValue, true);
+}
 
 void pidcontroller_reinit(int interval, int max, float diff, float tDiverge, float sDiverge, float maxs)
 {
@@ -34,6 +69,11 @@ void pidcontroller_reinit(int interval, int max, float diff, float tDiverge, flo
     tempDiverge     = tDiverge;
     speedDiverge    = sDiverge;
     maxSpeed        = maxs;
+
+    if (prevValue == 0.0) return;
+
+    calctune();
+    send_changes(tuneValue, true);
     return;
 }
 
@@ -46,17 +86,7 @@ void pidcontroller_init(uint8_t *chip, int interval, int max, float diff, float 
     return;
 }
 
-static void calctune(void)
-{
-    float degrPerStep = startDiff / (float) maxTune;
-    printf("degrPerStep = %f", degrPerStep);
 
-    float diff = target - prevValue;
-    tuneValue += (int) (diff / degrPerStep);
-    if (tuneValue >= (maxTune -3)) overHeatPossibility = true;
-    if (tuneValue >= maxTune) tuneValue = maxTune - 1;
-    if (tuneValue < 0) tuneValue = 0;
-}
 
 // changing the target while running.
 void pidcontroller_target(float newTarget)
@@ -67,24 +97,10 @@ void pidcontroller_target(float newTarget)
 
         if (prevValue == 0.0) return;
         calctune();
-        send_changes(tuneValue);
+        send_changes(tuneValue, true);
     }    
 }
 
-static void send_changes(int newTune)
-{
-    static int prevTune = -1;
-
-    if (prevTune != newTune)
-    {
-        struct measurement meas;
-        meas.id = HEATER;
-        meas.gpio = 0;
-        meas.data.count = newTune;
-        xQueueSend(evt_queue, &meas, 0);
-        prevTune = newTune;
-    }
-}
 
 // we have got a new temperature measurement.
 // let's see if we have to do something.
@@ -92,62 +108,117 @@ int pidcontroller_tune(float measurement)
 {
     time_t now;
     float speed = 0.001;
+    float acceleration = 0.0;
+    char *strtime;
+    static bool sendTune = true;
 
     float diff = target - measurement;
 
     time(&now);
     if (prevValue == 0.0) // at startup
     {
-        calctune();
         prevCheck = now;
         prevValue = measurement;
-        send_changes(tuneValue);
-        return tuneValue;
     }    
 
-    if ((now - prevCheck) < checkInterval)
-        return tuneValue; // no changes
+    //if ((now - prevCheck) < checkInterval)
+    //    return tuneValue; // no changes
+
 
     // speed is degrees per hour
-    speed = 3600 * (measurement - prevValue) / (now - prevCheck);
+    int secondsPassed = now - prevCheck;
+    strtime=asctime(localtime(&now));
+    strtime[strlen(strtime)-1] = 0;
+
+    speed = 3600 * (measurement - prevValue) / secondsPassed;
     prevValue = measurement;
     prevCheck = now;
 
-    if (fabs(diff) < tempDiverge) 
+    if (prevSpeed == 0.0) prevSpeed = 0.001;
+
+    if (secondsPassed)
+    {
+        acceleration = speed / (speed - prevSpeed);
+        if (acceleration) acceleration = 3600 / secondsPassed * acceleration;
+    }
+
+    printf("%s> Temperature = %f Speed = %f, PrevSpeed = %f Accleration = %f\n", strtime, measurement, speed, prevSpeed, acceleration);
+    prevSpeed = speed;
+
+    if (fabs(diff) < tempDiverge)
     {   // trying to stay near target without changing tune too much
-        if (speed >= speedDiverge) tuneValue--;
-        else if (speed <= (speedDiverge * -1.0)) tuneValue++;
-        else return tuneValue; // we are quite close, and speed is slow, don't change tune.
-    }    
+        printf("\tIn peaceful area.\n");
+        if (speed >= speedDiverge) {
+            tuneValue--;
+            printf("\tspeed value was too big %f compared to %f. Turned tune down to %d\n", speed, speedDiverge, tuneValue);
+        }
+        else if (speed <= (speedDiverge * -1.0))
+        {
+            tuneValue++;
+            printf("\tspeed value was too low %f compared to %f. Turned tune up to %d\n", speed, speedDiverge * -1.0, tuneValue);
+        }
+        else
+        {
+            printf("\tspeed is under limits %f compared to %f. Keeping the tune %d\n", speed, speedDiverge, tuneValue);
+            return tuneValue; // we are quite close, and speed is slow, don't change tune.
+        }
+    }
     else {
         if (speed > maxSpeed)
         {                    // don't care are we under target.
             tuneValue--;     // Speed is too high, even we may be under target
+            printf("\tSpeed is too high, %f compared to maxspeed %f ", speed, maxSpeed);
             if (diff < 0.0)  // and if over target, decrease more.
             {
                 if (overHeatPossibility)
                 {
+                    printf("Overheat possibility. ");
                     tuneValue = 0;
                     overHeatPossibility = false;
                 }
                 else tuneValue--;
+                printf("Tunevalue is %d", tuneValue);
             }
+            printf("\n");
         }
         else
         {
-            if (diff > 0.0 && speed < 0.0) tuneValue++; // under target, needs heating
+            // under target
+            if (diff > 0.0)
+            {
+                printf("%s> Under target and acceleration = %f\n", strtime, acceleration);
+                if (speed < 0.0)  // going down
+                {
+                    if (acceleration < -70.0) // but decelerating
+                    {
+                        tuneValue--; // less heating, temp is already turning
+                        printf("\tspeed is going down BUT decelerating, less power %d\n", tuneValue);
+                    }
+                    else
+                    {
+                        tuneValue++;                    // dropping continues
+                        printf("\tspeed is going down and accelerating, increase power %d\n", tuneValue);
+                    }
+                }
+            }
+            // over target
             if (diff < 0.0)
             {
+                printf("\ttemperature is over target, decreasing power.");
                 tuneValue--; // over target, decrease heating
-                if (speed)
+                if (speed > 0) {
                     tuneValue--; // over target and still increasing.
+                    printf("And is increasing.");
+                }
+                printf("Tunevalue = %d\n", tuneValue);
             }
         }
     }
     // don't overflow or underflow
     if (tuneValue >= maxTune) tuneValue = maxTune-1;
     if (tuneValue < 0) tuneValue = 0;
-    send_changes(tuneValue);
+    send_changes(tuneValue, sendTune);
+    sendTune = false;
     return tuneValue;
 }
 

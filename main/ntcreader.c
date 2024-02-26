@@ -17,7 +17,8 @@ static adc_oneshot_unit_handle_t adc1_handle;
 static uint8_t *chipid;
 static char temperatureTopic[64];
 static int sampleInterval = 1000;
-
+static float temperature;
+float prev = 0.0;
 
 /* TODO: calibrations should be stored in flash */
 static struct {
@@ -47,21 +48,45 @@ static int ntc_read(void)
     return adc_raw;
 }
 
+static void queue_measurement(float tempval)
+{
+    struct measurement meas;
+    meas.id = NTC;
+    meas.gpio = 36;
+    meas.data.temperature = tempval;
+    xQueueSend(evt_queue, &meas, 0);
+}
+
+float ntc_get_temperature(void)
+{
+    prev = temperature;
+    return temperature;
+}
+
+void ntc_sendcurrent(void)
+{
+    // TODO: mutex around temperature use. Every functions. See heater.c
+    queue_measurement(temperature);
+}
+
 
 static void ntc_reader(void* arg)
 {
     int cnt = 0;
     int sum = 0;
-    float prev = 0.0;
-    float temperature;
+    int minraw =  0xffff; // dont count on smallest
+    int maxraw = -0xffff; // biggest samples
 
     for(;;) 
     {
         int raw = ntc_read();
+
         sum += raw;
+        if (raw < minraw) minraw = raw;
+        if (raw > maxraw) maxraw = raw;
         if (++cnt == MEASURES_PER_SAMPLE)
         {
-            int avg = sum / MEASURES_PER_SAMPLE;
+            int avg = (sum - minraw - maxraw) / (MEASURES_PER_SAMPLE - 2);
             cnt = 0;
             sum = 0;
             temperature = convert(avg);
@@ -69,12 +94,10 @@ static void ntc_reader(void* arg)
             if (diff >= 0.08)
             {
                 prev = temperature;
-                struct measurement meas;
-                meas.id = NTC;
-                meas.gpio = 36;
-                meas.data.temperature = temperature;
-                xQueueSend(evt_queue, &meas, 0);
+                queue_measurement(temperature);
             }
+            minraw =  0xffff;
+            maxraw = -0xffff;
         }
         vTaskDelay(sampleInterval / portTICK_PERIOD_MS);
     }
@@ -113,6 +136,8 @@ void ntc_init(uint8_t *chip, int intervalMs)
         .bitwidth = ADC_BITWIDTH_DEFAULT,
         .atten = ADC_ATTEN_DB_6
     };
+    // mutex is here not needed, we are not yet threading.
+    temperature = convert(ntc_read());
     adc_oneshot_config_channel(adc1_handle, ADC_CHANNEL_0, &config);
     sampleInterval = intervalMs / MEASURES_PER_SAMPLE;
     xTaskCreate(ntc_reader, "ntc reader", 2048, NULL, 10, NULL);

@@ -9,5 +9,6 @@ extern void pidcontroller_reinit(int interval, int max, float diff, float tDiver
 extern void pidcontroller_target(float newTarget);
 extern int  pidcontroller_tune(float pv);
 extern bool pidcontroller_send(char *prefix, struct measurement *data, esp_mqtt_client_handle_t client);
+extern void pidcontroller_send_currenttune(void);
 
-#endif 
+#endif
