@@ -308,6 +308,28 @@ static bool handleJson(esp_mqtt_event_handle_t event)
             readSetupJson(root);
             ret = true;
         }
+        else if (!strcmp(getJsonStr(root,"id"),"calibratelow"))
+        {
+            float deflow = 20;
+            if (getJsonFloat(root, "temperature", &deflow))
+            {
+                printf("got calibration low %f\n", deflow);
+                ntc_set_calibr_low(deflow);
+            }
+        }
+        else if (!strcmp(getJsonStr(root,"id"),"calibratehigh"))
+        {
+            float defhigh = 30;
+            if (getJsonFloat(root, "temperature", &defhigh))
+            {
+                printf("got calibration high %f\n", defhigh);
+                ntc_set_calibr_high(defhigh);
+            }
+        }
+        else if (!strcmp(getJsonStr(root,"id"),"calibratesave"))
+        {
+            ntc_save_calibrations();
+        }
         else if (!strcmp(getJsonStr(root,"id"),"awhightemp"))
         {
             hitemp = jsonToHiLoTable(root,"values", &hitempcnt, hitemp);
@@ -434,12 +456,30 @@ static void mqtt_event_handler(void *handler_args, esp_event_base_t base, int32_
     }
 }
 
+/*  sntp_callback()
+**  My influx saver does not want to save records which have bad time.
+**  So, it's better to send them again, when correct time has been set.
+*/
+void sntp_callback(struct timeval *tv)
+{
+    (void) tv;
+    static bool firstSyncDone = false;
+
+    if (!firstSyncDone)
+    {
+        ntc_sendcurrent();
+        pidcontroller_send_currenttune();
+        firstSyncDone = true;
+    }
+}
+
 
 static void sntp_start()
 {
     sntp_setoperatingmode(SNTP_OPMODE_POLL);
     sntp_setservername(0, "pool.ntp.org");
     sntp_init();
+    sntp_set_time_sync_notification_cb(sntp_callback);
 }
 
 
@@ -649,6 +689,7 @@ void app_main(void)
     }
     else
     {
+        sntp_start();
         gpio_install_isr_service(ESP_INTR_FLAG_DEFAULT);
         factoryreset_init();
         wifi_connect(comminfo->ssid, comminfo->password);
@@ -675,9 +716,8 @@ void app_main(void)
                         setup.speeddiverge,
                         setup.maxspeed);
         pidcontroller_target(setup.target + elpriceInfluence);
-
         esp_mqtt_client_handle_t client = mqtt_app_start(chipid);
-        sntp_start();
+
         ESP_LOGI(TAG, "[APP] All init done, app_main, last line.");
 
         sprintf(statisticsTopic,"%s/thermostat/%x%x%x/statistics",
@@ -698,6 +738,8 @@ void app_main(void)
 
         float ntc = 0.0;
         float ds = 0.0;
+
+        heater_setlevel(pidcontroller_tune(ntc_get_temperature()));
 
         while (1)
         {

@@ -119,10 +119,8 @@ int pidcontroller_tune(float measurement)
     {
         prevCheck = now;
         prevValue = measurement;
+        return tuneValue;
     }    
-
-    //if ((now - prevCheck) < checkInterval)
-    //    return tuneValue; // no changes
 
 
     // speed is degrees per hour
