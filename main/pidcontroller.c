@@ -15,7 +15,6 @@ static uint8_t *chipid;
 static float target = 20.0;      // what is the needed temperature, can be changed while running with pidcontroller_target()
 static float startDiff = 2.0;    // if measured temperature is target minus startDiff, put heating to full
 static int maxTune = 1;          // how many power levels we want to have.
-static int checkInterval = 60;   // how often should we compare, has the temperature changed. In seconds
 static float tempDiverge = 0.05; // If we are this close or less to the target, we don't change the power level
 static float speedDiverge = 6.0;  // temperature should change at least this much in a hour to consider speed has changed
 static float maxSpeed = 30.0;     // max speed increase Celsius per hour.
@@ -61,16 +60,13 @@ void pidcontroller_send_currenttune(void)
     send_changes(tuneValue, true);
 }
 
-void pidcontroller_reinit(int interval, int max, float diff, float tDiverge, float sDiverge, float maxs)
+void pidcontroller_reinit(int max, float diff, float tDiverge, float sDiverge, float maxs)
 {
-    checkInterval   = interval;
     startDiff       = diff;
     maxTune         = max;
     tempDiverge     = tDiverge;
     speedDiverge    = sDiverge;
     maxSpeed        = maxs;
-
-    if (prevValue == 0.0) return;
 
     calctune();
     send_changes(tuneValue, true);
@@ -78,11 +74,11 @@ void pidcontroller_reinit(int interval, int max, float diff, float tDiverge, flo
 }
 
 
-void pidcontroller_init(uint8_t *chip, int interval, int max, float diff, float tDiverge, float sDiverge, float maxs)
+void pidcontroller_init(uint8_t *chip, int max, float diff, float tDiverge, float sDiverge, float maxs)
 {
     chipid = chip;
     time(&prevCheck);
-    pidcontroller_reinit(interval,max,diff,tDiverge,sDiverge, maxs);
+    pidcontroller_reinit(max,diff,tDiverge,sDiverge, maxs);
     return;
 }
 
@@ -95,7 +91,6 @@ void pidcontroller_target(float newTarget)
     {
         target = newTarget;
 
-        if (prevValue == 0.0) return;
         calctune();
         send_changes(tuneValue, true);
     }    

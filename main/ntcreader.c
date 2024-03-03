@@ -19,6 +19,7 @@ static uint8_t *chipid;
 static char temperatureTopic[64];
 static int sampleInterval = 1000;
 static float temperature;
+static int samplecnt = 10;
 static int lastRaw = 0;
 static float prevTemp = 0.0;
 static SemaphoreHandle_t mutex;
@@ -116,10 +117,14 @@ bool ntc_save_calibrations(void)
 
 float ntc_get_temperature(void)
 {
-    if (xSemaphoreTake(mutex, (TickType_t ) 1000) == pdTRUE)
+    for (int i=0; i < 3; i++)
     {
-        prevTemp = temperature;
-        xSemaphoreGive(mutex);
+        if (xSemaphoreTake(mutex, (TickType_t ) 1000) == pdTRUE)
+        {
+            prevTemp = temperature;
+            xSemaphoreGive(mutex);
+            break;
+        }
     }
     return prevTemp;
 }
@@ -148,9 +153,9 @@ static void ntc_reader(void* arg)
         sum += raw;
         if (raw < minraw) minraw = raw;
         if (raw > maxraw) maxraw = raw;
-        if (++cnt == MEASURES_PER_SAMPLE)
+        if (++cnt == samplecnt)
         {
-            int avg = (sum - minraw - maxraw) / (MEASURES_PER_SAMPLE - 2);
+            int avg = (sum - minraw - maxraw) / (samplecnt - 2);
             cnt = 0;
             sum = 0;
 
@@ -195,7 +200,7 @@ bool ntc_send(char *prefix, struct measurement *data, esp_mqtt_client_handle_t c
 }
 
 
-void ntc_init(uint8_t *chip, int intervalMs)
+void ntc_init(uint8_t *chip, int intervalMs, int cnt)
 {
     mutex = xSemaphoreCreateMutex();
     if (mutex == NULL)
@@ -203,6 +208,7 @@ void ntc_init(uint8_t *chip, int intervalMs)
         printf("%s failed to create mutex",__FILE__);
         return;
     }
+    samplecnt = cnt;
     calibr[CAL_MIN].raw   = flash_read(calibr[CAL_MIN].rawname,  calibr[CAL_MIN].raw);
     calibr[CAL_MIN].temp  = flash_read_float(calibr[CAL_MIN].tempname, calibr[CAL_MIN].temp);
     calibr[CAL_MAX].raw   = flash_read(calibr[CAL_MAX].rawname,  calibr[CAL_MAX].raw);
@@ -221,7 +227,7 @@ void ntc_init(uint8_t *chip, int intervalMs)
     // mutex is here not needed, we are not yet threading.
     temperature = convert(ntc_read());
     printf("ntc_init, first temperature read is %f\n", temperature);
-    sampleInterval = intervalMs / MEASURES_PER_SAMPLE;
+    sampleInterval = intervalMs / samplecnt;
     xTaskCreate(ntc_reader, "ntc reader", 2048, NULL, 10, NULL);
     return;
 }

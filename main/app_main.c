@@ -75,14 +75,19 @@ struct netinfo {
 };
 
 struct {
-    int pwmlen;
+    // ntc
     int interval;
+    int samples;
+
+    // pidcontroller
+    int pwmlen;
     float target;
     float diff;
     float tempdiverge;
     float speeddiverge;
     float maxspeed;
-} setup = { 15, 10, 24.0, 2.0, 0.05, 6.0 , 30.0};
+} setup = { 15, 10,
+            15, 24.0, 2.0, 0.05, 6.0 , 30.0};
 
 struct specialTemperature
 {
@@ -102,7 +107,7 @@ QueueHandle_t evt_queue = NULL;
 char jsondata[256];
 uint16_t sendcnt = 0;
 
-static const char *TAG = "SENSORSET";
+static const char *TAG = "THERMOSTAT";
 static bool isConnected = false;
 static uint16_t connectcnt = 0;
 static uint16_t disconnectcnt = 0;
@@ -245,6 +250,7 @@ static bool isInArray(char *str, struct specialTemperature *arr, int cnt)
 }
 
 
+// pidcontroller config
 static void readSetupJson(cJSON *root)
 {
     bool reinit_needed = false;
@@ -255,12 +261,6 @@ static void readSetupJson(cJSON *root)
         flash_write("pwmlen", setup.pwmlen);
     }
 
-    // pidcontroller config
-    if (getJsonInt(root, "interval", &setup.interval))
-    {
-        flash_write("interval", setup.interval);
-        reinit_needed = true;
-    }
     if (getJsonFloat(root, "diff", &setup.diff))
     {
         flash_write_float("diff", setup.diff);
@@ -288,12 +288,20 @@ static void readSetupJson(cJSON *root)
         flash_write_float("target", setup.target);
         heater_setlevel(pidcontroller_tune(ntc_get_temperature()));
     }
-    if (reinit_needed) pidcontroller_reinit(setup.interval, HEATER_POWERLEVELS,
+    if (reinit_needed) pidcontroller_reinit(HEATER_POWERLEVELS,
                                             setup.diff, setup.tempdiverge, setup.speeddiverge, setup.maxspeed);
 
     flash_commitchanges();
 }
 
+/*
+** Setup messages
+{"dev":"5bdddc","id":"brightness","value":0}
+{"dev":"5bdddc","id":"calibratehigh","temperature":25.38}                       ntc should be in this temperature
+{"dev":"5bdddc","id":"calibratelow","temperature":20.02}                        ntc should be in this temperature
+{"dev":"5bdddc","id":"ntcreader","interval":15, "samples":10}                   ntc reader averages the temperature in every 15 seconds, from samples amount.
+{"dev":"5bdddc","id":"setup","pwmlen":15,"interval":15,"target":25.50,"diff":2.00,"tempdiverge":0.15,"speeddiverge":10.0,"maxspeed":30.0}
+*/
 
 static bool handleJson(esp_mqtt_event_handle_t event)
 {
@@ -307,6 +315,19 @@ static bool handleJson(esp_mqtt_event_handle_t event)
             printf("got setup\n");
             readSetupJson(root);
             ret = true;
+        }
+        if (!strcmp(getJsonStr(root,"id"),"ntcreader"))
+        {
+            if (getJsonInt(root, "interval", &setup.interval))
+            {
+                flash_write("interval", setup.interval);
+                ret = true;
+            }
+            if (getJsonInt(root, "samples", &setup.samples))
+            {
+                flash_write("samples", setup.samples);
+                ret = true;
+            }
         }
         else if (!strcmp(getJsonStr(root,"id"),"calibratelow"))
         {
@@ -329,6 +350,15 @@ static bool handleJson(esp_mqtt_event_handle_t event)
         else if (!strcmp(getJsonStr(root,"id"),"calibratesave"))
         {
             ntc_save_calibrations();
+        }
+        else if (!strcmp(getJsonStr(root,"id"),"brightness"))
+        {
+            int brightness = 1;
+            if (getJsonInt(root, "value", &brightness))
+            {
+                printf("got display brightness %f\n", brightness);
+                display_brightness(brightness);
+            }
         }
         else if (!strcmp(getJsonStr(root,"id"),"awhightemp"))
         {
@@ -422,6 +452,7 @@ static void mqtt_event_handler(void *handler_args, esp_event_base_t base, int32_
     case MQTT_EVENT_DISCONNECTED:
         ESP_LOGI(TAG, "MQTT_EVENT_DISCONNECTED");
         disconnectcnt++;
+        isConnected = false;
         gpio_set_level(MQTTSTATUS_GPIO, false);
         break;
 
@@ -685,7 +716,7 @@ void app_main(void)
     {
         display_text(" setup ");
         gpio_set_level(SETUP_GPIO, true);
-        server_init();
+        server_init(); // starting ap webserver
     }
     else
     {
@@ -695,10 +726,12 @@ void app_main(void)
         wifi_connect(comminfo->ssid, comminfo->password);
         evt_queue = xQueueCreate(10, sizeof(struct measurement));
 
+        ntc_init(chipid, setup.interval * 1000, setup.samples);
         temperatures_init(TEMP_BUS, chipid);
 
         setup.pwmlen       = flash_read("pwmlen", setup.pwmlen);
-        setup.interval     = flash_read("interval", setup.interval);  // obsolete
+        setup.interval     = flash_read("interval", setup.interval);
+        setup.samples      = flash_read("samples", setup.samples);
         setup.target       = flash_read_float("target", setup.target);
         setup.diff         = flash_read_float("diff", setup.diff);
         setup.tempdiverge  = flash_read_float("tempdiverge", setup.tempdiverge);
@@ -707,9 +740,7 @@ void app_main(void)
 
 
         heater_init(setup.pwmlen, HEATER_POWERLEVELS);
-        ntc_init(chipid, NTC_INTERVAL_MS);
         pidcontroller_init(chipid,
-                        setup.interval,
                         HEATER_POWERLEVELS,
                         setup.diff,
                         setup.tempdiverge,
@@ -745,7 +776,7 @@ void app_main(void)
         {
             struct measurement meas;
 
-            if(xQueueReceive(evt_queue, &meas, 60 * 1000 / portTICK_PERIOD_MS)) {
+            if(xQueueReceive(evt_queue, &meas, 6 * 1000 * setup.interval / portTICK_PERIOD_MS)) {
                 time(&now);
                 uint16_t qcnt = uxQueueMessagesWaiting(evt_queue);
                 if (started < MIN_EPOCH)
