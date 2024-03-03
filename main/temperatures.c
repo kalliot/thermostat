@@ -91,17 +91,18 @@ char *temperatures_info()
             temperatureInfo[0] = 0;
         else
             return noInfo;
+        for (int i = 0; i < tempSensorCnt; i++)
+        {
+            strcat(temperatureInfo,"\"");
+            strcat(temperatureInfo,sensors[i].sensorname);
+            strcat(temperatureInfo,"\"");
+            strcat(temperatureInfo,",");
+        }
+        temperatureInfo[strlen(temperatureInfo)-1] = 0;
     }
-    for (int i = 0; i < tempSensorCnt; i++)
-    {
-        strcat(temperatureInfo,"\"");
-        strcat(temperatureInfo,sensors[i].sensorname);
-        strcat(temperatureInfo,"\"");
-        strcat(temperatureInfo,",");
-    }
-    temperatureInfo[strlen(temperatureInfo)-1] = 0;
     return temperatureInfo;
 }
+
 
 bool temperature_send(char *prefix, struct measurement *data, esp_mqtt_client_handle_t client)
 {

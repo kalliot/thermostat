@@ -47,7 +47,7 @@ extern void example_wifi_start(void);
 #define STATEINPUT_GPIO       33
 #define STATEINPUT_GPIO2      32
 #define STATISTICS_INTERVAL 1800
-#define PROGRAM_VERSION     0.01
+#define PROGRAM_VERSION     0.03
 #define ESP_INTR_FLAG_DEFAULT  0
 #define HEATER_POWERLEVELS    30
 #define NTC_INTERVAL_MS     5000
@@ -199,14 +199,21 @@ static struct specialTemperature *jsonToHiLoTable(cJSON *js, char *name, int *cn
         if (cJSON_IsArray(item))
         {
             itemCnt = cJSON_GetArraySize(item);
+
             // table should be allocated or reallocated, if count of lines differ.
-            if (*cnt == 0 || itemCnt != *cnt) // we alread had a table
+            if (*cnt == 0 || itemCnt != *cnt) // we already had a table
             {
                 *cnt = itemCnt;
-                if (tempArr != NULL) free(tempArr);
-                tempArr = (struct specialTemperature *) malloc(itemCnt * sizeof(struct specialTemperature));
+                if (tempArr != NULL)
+                {
+                    free(tempArr);   // array sizes are different, free old one and allocate a new one.
+                    tempArr = NULL;  // no array items in json.
+                }
+                if (itemCnt)
+                {
+                    tempArr = (struct specialTemperature *) malloc(itemCnt * sizeof(struct specialTemperature));
+                }
             }
-
             if (tempArr != NULL)
             {
                 for (int i=0;i<itemCnt;i++)
@@ -567,6 +574,7 @@ static void sendInfo(esp_mqtt_client_handle_t client, uint8_t *chipid)
     printf("sending info\n");
     gpio_set_level(BLINK_GPIO, false);
 }
+
 
 static void sendSetup(esp_mqtt_client_handle_t client, uint8_t *chipid)
 {
