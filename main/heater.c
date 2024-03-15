@@ -14,7 +14,7 @@
 static int currentLevel = 0;
 static int levelCnt = 10;
 static int slotLen = 1000;
-SemaphoreHandle_t mutex;
+static SemaphoreHandle_t mutex;
 
 static void activator(void* arg)
 {

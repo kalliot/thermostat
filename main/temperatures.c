@@ -18,7 +18,7 @@
 #include "mqtt_client.h"
 #include "thermostat.h"
 
-#define MAX_SENSORS 2
+#define MAX_SENSORS 4
 #define SENSOR_NAMELEN 17
 #define NO_CHANGE_INTERVAL 900
 
@@ -125,7 +125,7 @@ bool temperature_send(char *prefix, struct measurement *data, esp_mqtt_client_ha
     return true;
 }
 
-#define DELAY_BETWEEN_SENSORS 1000
+#define DELAY_BETWEEN_SENSORS 2000
 
 static void getFirstTemperatures()
 {
@@ -156,7 +156,6 @@ static void getFirstTemperatures()
 static void temp_reader(void* arg)
 {
     int delay = 10000 - (tempSensorCnt) * DELAY_BETWEEN_SENSORS;
-    int retry=0;
     float temperature;
     time_t now;
 
@@ -167,24 +166,22 @@ static void temp_reader(void* arg)
 
     for(;;) {
         time(&now);
+        printf("reading temperatures, temp sensor count=%d, delay between reads=%d\n", tempSensorCnt, delay);
         ds18b20_requestTemperatures();
-        for (int i=0; i < tempSensorCnt;) {
+        for (int i=0; i < tempSensorCnt; i++) {
             vTaskDelay(DELAY_BETWEEN_SENSORS / portTICK_PERIOD_MS); 
             temperature = ds18b20_getTempC((DeviceAddress *) sensors[i].addr);
             float diff = fabs(sensors[i].prev - temperature);
-
+            printf("temperature in sensor index %d, name %s is %f\n", i, sensors[i].sensorname, temperature);
             if (temperature < -10.0 || temperature > 85.0 || diff > 20.0)
             {
                 sensorerrors++;
-                if (++retry > 5)
-                {
-                    retry = 0;
-                    i++; // next sensor
-                }
             }
             else
             {
-                if ((diff) >= 0.2 || ((now - sensors[i].prevsend) > NO_CHANGE_INTERVAL))
+                int age = now - sensors[i].prevsend;
+                printf("Measurement in sensor %d age is %d seconds\n", i, age);
+                if ((diff) >= 0.2 || (age > NO_CHANGE_INTERVAL))
                 {
                     struct measurement meas;
                     meas.id = TEMPERATURE;
@@ -194,7 +191,6 @@ static void temp_reader(void* arg)
                     sensors[i].prev = temperature;
                     sensors[i].prevsend = now;
                 }
-                i++;
             }
         }    
         vTaskDelay(delay / portTICK_PERIOD_MS);

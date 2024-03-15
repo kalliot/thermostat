@@ -40,8 +40,6 @@
 #include "apwebserver/server.h"
 #include "factoryreset.h"
 
-extern esp_err_t example_wifi_sta_do_connect(wifi_config_t wifi_config, bool wait);
-extern void example_wifi_start(void);
 
 #define TEMP_BUS              25
 #define STATEINPUT_GPIO       33
@@ -79,6 +77,7 @@ struct {
     int interval;
     int samples;
 
+    int brightness;
     // pidcontroller
     int pwmlen;
     float target;
@@ -86,7 +85,7 @@ struct {
     float tempdiverge;
     float speeddiverge;
     float maxspeed;
-} setup = { 15, 10,
+} setup = { 15, 10, 0,
             15, 24.0, 2.0, 0.05, 6.0 , 30.0};
 
 struct specialTemperature
@@ -258,7 +257,7 @@ static bool isInArray(char *str, struct specialTemperature *arr, int cnt)
 
 
 // pidcontroller config
-static void readSetupJson(cJSON *root)
+static void readPidSetupJson(cJSON *root)
 {
     bool reinit_needed = false;
 
@@ -307,7 +306,7 @@ static void readSetupJson(cJSON *root)
 {"dev":"5bdddc","id":"calibratehigh","temperature":25.38}                       ntc should be in this temperature
 {"dev":"5bdddc","id":"calibratelow","temperature":20.02}                        ntc should be in this temperature
 {"dev":"5bdddc","id":"ntcreader","interval":15, "samples":10}                   ntc reader averages the temperature in every 15 seconds, from samples amount.
-{"dev":"5bdddc","id":"setup","pwmlen":15,"interval":15,"target":25.50,"diff":2.00,"tempdiverge":0.15,"speeddiverge":10.0,"maxspeed":30.0}
+{"dev":"5bdddc","id":"pidsetup","pwmlen":15,"target":25.50,"diff":2.00,"tempdiverge":0.15,"speeddiverge":10.0,"maxspeed":30.0}
 */
 
 static bool handleJson(esp_mqtt_event_handle_t event)
@@ -317,10 +316,10 @@ static bool handleJson(esp_mqtt_event_handle_t event)
 
     if (root != NULL)
     {
-        if (!strcmp(getJsonStr(root,"id"),"setup"))
+        if (!strcmp(getJsonStr(root,"id"),"pidsetup"))
         {
-            printf("got setup\n");
-            readSetupJson(root);
+            printf("got pid setup\n");
+            readPidSetupJson(root);
             ret = true;
         }
         if (!strcmp(getJsonStr(root,"id"),"ntcreader"))
@@ -360,11 +359,11 @@ static bool handleJson(esp_mqtt_event_handle_t event)
         }
         else if (!strcmp(getJsonStr(root,"id"),"brightness"))
         {
-            int brightness = 1;
-            if (getJsonInt(root, "value", &brightness))
+            if (getJsonInt(root, "value", &setup.brightness))
             {
-                printf("got display brightness %f\n", brightness);
-                display_brightness(brightness);
+                printf("got display brightness %f\n", setup.brightness);
+                flash_write("brightness", setup.brightness);
+                display_brightness(setup.brightness);
             }
         }
         else if (!strcmp(getJsonStr(root,"id"),"awhightemp"))
@@ -582,15 +581,32 @@ static void sendSetup(esp_mqtt_client_handle_t client, uint8_t *chipid)
 
     char setupTopic[42];
 
-    sprintf(setupTopic,"%s/thermostat/%x%x%x/setup",
+    sprintf(setupTopic,"%s/thermostat/%x%x%x/setup/pid",
          comminfo->mqtt_prefix, chipid[3],chipid[4],chipid[5]);
-    sprintf(jsondata, "{\"dev\":\"%x%x%x\",\"id\":\"setup\",\"pwmlen\":%d,\"interval\":%d,"
+    sprintf(jsondata, "{\"dev\":\"%x%x%x\",\"id\":\"pidsetup\",\"pwmlen\":%d,"
                       "\"target\":%2.2f,\"diff\":%2.2f,\"tempdiverge\":%2.2f,\"speeddiverge\":%2.2f,\"maxspeed\":%2.2f}",
                 chipid[3],chipid[4],chipid[5],
-                setup.pwmlen, setup.interval, setup.target, setup.diff,
+                setup.pwmlen, setup.target, setup.diff,
                 setup.tempdiverge, setup.speeddiverge, setup.maxspeed);
     esp_mqtt_client_publish(client, setupTopic, jsondata , 0, 0, 1);
     sendcnt++;
+
+    sprintf(setupTopic,"%s/thermostat/%x%x%x/setup/ntc",
+         comminfo->mqtt_prefix, chipid[3],chipid[4],chipid[5]);
+    sprintf(jsondata, "{\"dev\":\"%x%x%x\",\"id\":\"ntcreader\",\"interval\":%d,\"samples\":%d",
+                chipid[3],chipid[4],chipid[5],
+                setup.interval, setup.samples);
+    esp_mqtt_client_publish(client, setupTopic, jsondata , 0, 0, 1);
+    sendcnt++;
+
+    sprintf(setupTopic,"%s/thermostat/%x%x%x/setup/brightness",
+         comminfo->mqtt_prefix, chipid[3],chipid[4],chipid[5]);
+    sprintf(jsondata, "{\"dev\":\"%x%x%x\",\"id\":\"brightness\",\"value\":%d",
+                chipid[3],chipid[4],chipid[5],
+                setup.brightness);
+    esp_mqtt_client_publish(client, setupTopic, jsondata , 0, 0, 1);                
+    sendcnt++;
+
     gpio_set_level(BLINK_GPIO, false);
 }
 
@@ -739,6 +755,7 @@ void app_main(void)
 
         setup.pwmlen       = flash_read("pwmlen", setup.pwmlen);
         setup.interval     = flash_read("interval", setup.interval);
+        setup.brightness   = flash_read("brightness", setup.brightness);
         setup.samples      = flash_read("samples", setup.samples);
         setup.target       = flash_read_float("target", setup.target);
         setup.diff         = flash_read_float("diff", setup.diff);
@@ -746,7 +763,7 @@ void app_main(void)
         setup.speeddiverge = flash_read_float("speeddiverge", setup.speeddiverge);
         setup.maxspeed     = flash_read_float("maxspeed", setup.maxspeed);
 
-
+        display_brightness(setup.brightness);
         heater_init(setup.pwmlen, HEATER_POWERLEVELS);
         pidcontroller_init(chipid,
                         HEATER_POWERLEVELS,

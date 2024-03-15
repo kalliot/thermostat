@@ -29,14 +29,16 @@ static char thermostatTopic[64];
 static void calctune(void)
 {
     float degrPerStep = startDiff / (float) maxTune;
-    printf("--------> degrPerStep = %f", degrPerStep);
+    printf("--------> degrPerStep = %f\n", degrPerStep);
+
+    if (prevValue == 0.0) return;
 
     float diff = target - prevValue;
     tuneValue += (int) (diff / degrPerStep);
     if (tuneValue >= (maxTune -3)) overHeatPossibility = true;
     if (tuneValue >= maxTune) tuneValue = maxTune - 1;
     if (tuneValue < 0) tuneValue = 0;
-    printf("calctune, tune is %d\n", tuneValue);
+    printf("\tdiff = %f, calctune, tune is %d\n", diff, tuneValue);
 }
 
 static void send_changes(int newTune, bool forced)
@@ -114,6 +116,7 @@ int pidcontroller_tune(float measurement)
     {
         prevCheck = now;
         prevValue = measurement;
+        calctune();
         return tuneValue;
     }    
 
