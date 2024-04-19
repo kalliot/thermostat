@@ -45,7 +45,7 @@
 #define STATEINPUT_GPIO       33
 #define STATEINPUT_GPIO2      32
 #define STATISTICS_INTERVAL 1800
-#define PROGRAM_VERSION     0.03
+#define PROGRAM_VERSION     0.04
 #define ESP_INTR_FLAG_DEFAULT  0
 #define HEATER_POWERLEVELS    30
 #define NTC_INTERVAL_MS     5000
@@ -81,12 +81,11 @@ struct {
     // pidcontroller
     int pwmlen;
     float target;
-    float diff;
-    float tempdiverge;
-    float speeddiverge;
-    float maxspeed;
+    float kp;
+    float ki;
+    float kd;
 } setup = { 15, 10, 0,
-            15, 24.0, 2.0, 0.05, 6.0 , 30.0};
+            15, 24.0, 5 , 1, 3 };
 
 struct specialTemperature
 {
@@ -267,36 +266,32 @@ static void readPidSetupJson(cJSON *root)
         flash_write("pwmlen", setup.pwmlen);
     }
 
-    if (getJsonFloat(root, "diff", &setup.diff))
+    if (getJsonFloat(root, "pidkp", &setup.kp))
     {
-        flash_write_float("diff", setup.diff);
+        flash_write_float("pidkp", setup.kp);
         reinit_needed = true;
     }
-    if (getJsonFloat(root, "tempdiverge", &setup.tempdiverge))
+    if (getJsonFloat(root, "pidki", &setup.ki))
     {
-        flash_write_float("tempdiverge", setup.tempdiverge);
+        flash_write_float("pidki", setup.ki);
         reinit_needed = true;
     }
-    if (getJsonFloat(root, "speeddiverge", &setup.speeddiverge))
+    if (getJsonFloat(root, "pidkd", &setup.kd))
     {
-        flash_write_float("speeddiverge", setup.speeddiverge);
+        flash_write_float("pidkd", setup.kd);
         reinit_needed = true;
     }
-    if (getJsonFloat(root, "maxspeed", &setup.maxspeed))
-    {
-        flash_write_float("maxspeed", setup.maxspeed);
-        reinit_needed = true;
-    }
-
     if (getJsonFloat(root, "target", &setup.target))
     {
         pidcontroller_target(setup.target + elpriceInfluence);
         flash_write_float("target", setup.target);
         heater_setlevel(pidcontroller_tune(ntc_get_temperature()));
     }
-    if (reinit_needed) pidcontroller_reinit(HEATER_POWERLEVELS,
-                                            setup.diff, setup.tempdiverge, setup.speeddiverge, setup.maxspeed);
-
+    if (reinit_needed) 
+    {
+        pidcontroller_adjust(setup.interval,setup.kp, setup.ki, setup.kd);
+        heater_setlevel(pidcontroller_tune(ntc_get_temperature()));
+    }
     flash_commitchanges();
 }
 
@@ -306,7 +301,7 @@ static void readPidSetupJson(cJSON *root)
 {"dev":"5bdddc","id":"calibratehigh","temperature":25.38}                       ntc should be in this temperature
 {"dev":"5bdddc","id":"calibratelow","temperature":20.02}                        ntc should be in this temperature
 {"dev":"5bdddc","id":"ntcreader","interval":15, "samples":10}                   ntc reader averages the temperature in every 15 seconds, from samples amount.
-{"dev":"5bdddc","id":"pidsetup","pwmlen":15,"target":25.50,"diff":2.00,"tempdiverge":0.15,"speeddiverge":10.0,"maxspeed":30.0}
+{"dev":"5bdddc","id":"pidsetup","pwmlen":15,"target":25.50,"pidkp":5.00,"pidki":1.0,"pidkd":3.0}
 */
 
 static bool handleJson(esp_mqtt_event_handle_t event)
@@ -584,16 +579,16 @@ static void sendSetup(esp_mqtt_client_handle_t client, uint8_t *chipid)
     sprintf(setupTopic,"%s/thermostat/%x%x%x/setup/pid",
          comminfo->mqtt_prefix, chipid[3],chipid[4],chipid[5]);
     sprintf(jsondata, "{\"dev\":\"%x%x%x\",\"id\":\"pidsetup\",\"pwmlen\":%d,"
-                      "\"target\":%2.2f,\"diff\":%2.2f,\"tempdiverge\":%2.2f,\"speeddiverge\":%2.2f,\"maxspeed\":%2.2f}",
+                      "\"target\":%2.2f,\"pidkp\":%2.2f,\"pidki\":%2.2f,\"pidkd\":%2.2f}",
                 chipid[3],chipid[4],chipid[5],
-                setup.pwmlen, setup.target, setup.diff,
-                setup.tempdiverge, setup.speeddiverge, setup.maxspeed);
+                setup.pwmlen, setup.target, setup.kp,
+                setup.ki, setup.kd);
     esp_mqtt_client_publish(client, setupTopic, jsondata , 0, 0, 1);
     sendcnt++;
 
     sprintf(setupTopic,"%s/thermostat/%x%x%x/setup/ntc",
          comminfo->mqtt_prefix, chipid[3],chipid[4],chipid[5]);
-    sprintf(jsondata, "{\"dev\":\"%x%x%x\",\"id\":\"ntcreader\",\"interval\":%d,\"samples\":%d",
+    sprintf(jsondata, "{\"dev\":\"%x%x%x\",\"id\":\"ntcreader\",\"interval\":%d,\"samples\":%d}",
                 chipid[3],chipid[4],chipid[5],
                 setup.interval, setup.samples);
     esp_mqtt_client_publish(client, setupTopic, jsondata , 0, 0, 1);
@@ -601,7 +596,7 @@ static void sendSetup(esp_mqtt_client_handle_t client, uint8_t *chipid)
 
     sprintf(setupTopic,"%s/thermostat/%x%x%x/setup/brightness",
          comminfo->mqtt_prefix, chipid[3],chipid[4],chipid[5]);
-    sprintf(jsondata, "{\"dev\":\"%x%x%x\",\"id\":\"brightness\",\"value\":%d",
+    sprintf(jsondata, "{\"dev\":\"%x%x%x\",\"id\":\"brightness\",\"value\":%d}",
                 chipid[3],chipid[4],chipid[5],
                 setup.brightness);
     esp_mqtt_client_publish(client, setupTopic, jsondata , 0, 0, 1);                
@@ -707,6 +702,8 @@ void app_main(void)
     time_t now, prevStatsTs;
     esp_efuse_mac_get_default(chipid);
 
+    int tune;
+
     ESP_LOGI(TAG, "[APP] Startup..");
     ESP_LOGI(TAG, "[APP] Free memory: %d bytes", esp_get_free_heap_size());
     ESP_LOGI(TAG, "[APP] IDF version: %s", esp_get_idf_version());
@@ -749,8 +746,6 @@ void app_main(void)
         factoryreset_init();
         wifi_connect(comminfo->ssid, comminfo->password);
         evt_queue = xQueueCreate(10, sizeof(struct measurement));
-
-        ntc_init(chipid, setup.interval * 1000, setup.samples);
         temperatures_init(TEMP_BUS, chipid);
 
         setup.pwmlen       = flash_read("pwmlen", setup.pwmlen);
@@ -758,19 +753,14 @@ void app_main(void)
         setup.brightness   = flash_read("brightness", setup.brightness);
         setup.samples      = flash_read("samples", setup.samples);
         setup.target       = flash_read_float("target", setup.target);
-        setup.diff         = flash_read_float("diff", setup.diff);
-        setup.tempdiverge  = flash_read_float("tempdiverge", setup.tempdiverge);
-        setup.speeddiverge = flash_read_float("speeddiverge", setup.speeddiverge);
-        setup.maxspeed     = flash_read_float("maxspeed", setup.maxspeed);
+        setup.kp           = flash_read_float("pidkp", setup.kp);
+        setup.ki           = flash_read_float("pidki", setup.ki);
+        setup.kd           = flash_read_float("pidkd", setup.kd);
 
+        ntc_init(chipid, setup.interval * 1000, setup.samples);
         display_brightness(setup.brightness);
         heater_init(setup.pwmlen, HEATER_POWERLEVELS);
-        pidcontroller_init(chipid,
-                        HEATER_POWERLEVELS,
-                        setup.diff,
-                        setup.tempdiverge,
-                        setup.speeddiverge,
-                        setup.maxspeed);
+        pidcontroller_init(comminfo->mqtt_prefix, chipid, HEATER_POWERLEVELS, setup.interval, setup.kp, setup.ki, setup.kd);
         pidcontroller_target(setup.target + elpriceInfluence);
         esp_mqtt_client_handle_t client = mqtt_app_start(chipid);
 
@@ -795,13 +785,17 @@ void app_main(void)
         float ntc = 0.0;
         float ds = 0.0;
 
-        heater_setlevel(pidcontroller_tune(ntc_get_temperature()));
+        float sample = ntc_get_temperature();
+        tune = pidcontroller_tune(sample);
+
+        printf("--> tune=%d\n", tune);
+        heater_setlevel(tune);
 
         while (1)
         {
             struct measurement meas;
 
-            if(xQueueReceive(evt_queue, &meas, 6 * 1000 * setup.interval / portTICK_PERIOD_MS)) {
+            if(xQueueReceive(evt_queue, &meas, 4 * 1000 * setup.interval / portTICK_PERIOD_MS)) {
                 time(&now);
                 uint16_t qcnt = uxQueueMessagesWaiting(evt_queue);
                 if (started < MIN_EPOCH)
@@ -826,7 +820,9 @@ void app_main(void)
                         ntc = meas.data.temperature;
                         if (isConnected) ntc_send(comminfo->mqtt_prefix, &meas, client);
                         display_show(ntc, ds);
-                        heater_setlevel(pidcontroller_tune(ntc));
+                        tune = pidcontroller_tune(ntc);
+                        heater_setlevel(tune);
+                        printf("--> tune=%d\n", tune);
                     break;
 
                     case TEMPERATURE:
@@ -836,7 +832,7 @@ void app_main(void)
                     break;
 
                     case HEATER:
-                        if (isConnected) pidcontroller_send(comminfo->mqtt_prefix, &meas, client);
+                        if (isConnected) pidcontroller_send(&meas, client);
                     break;
 
                     default:
@@ -848,7 +844,9 @@ void app_main(void)
                 printf("timeout\n");
                 ntc = ntc_get_temperature();
                 display_show(ntc, ds);
-                heater_setlevel(pidcontroller_tune(ntc));
+                tune = pidcontroller_tune(ntc);
+                heater_setlevel(tune);
+                printf("tune=%d\n", tune);
             }
         }
     }

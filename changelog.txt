@@ -1,2 +1,4 @@
 v 0.02 - started to refactor some setup sets. Following better for mqtt connection state.
 v 0.03 - found a bug in temperature.c ( dallas sensor using code)
+v 0.04 - pidcontroller rewrite.
+
