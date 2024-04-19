@@ -164,7 +164,7 @@ static void ntc_reader(void* arg)
                 lastRaw = avg; // lastraw is needed for calibraions;
                 temperature = convert(avg);
                 float diff = fabs(prevTemp - temperature);
-                if (diff >= 0.08)
+                if (diff >= 0.05)
                 {
                     prevTemp = temperature;
                     queue_measurement(temperature);

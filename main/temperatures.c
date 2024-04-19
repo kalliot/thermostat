@@ -166,13 +166,13 @@ static void temp_reader(void* arg)
 
     for(;;) {
         time(&now);
-        printf("reading temperatures, temp sensor count=%d, delay between reads=%d\n", tempSensorCnt, delay);
+        //printf("reading temperatures, temp sensor count=%d, delay between reads=%d\n", tempSensorCnt, delay);
         ds18b20_requestTemperatures();
         for (int i=0; i < tempSensorCnt; i++) {
             vTaskDelay(DELAY_BETWEEN_SENSORS / portTICK_PERIOD_MS); 
             temperature = ds18b20_getTempC((DeviceAddress *) sensors[i].addr);
             float diff = fabs(sensors[i].prev - temperature);
-            printf("temperature in sensor index %d, name %s is %f\n", i, sensors[i].sensorname, temperature);
+            //printf("temperature in sensor index %d, name %s is %f\n", i, sensors[i].sensorname, temperature);
             if (temperature < -10.0 || temperature > 85.0 || diff > 20.0)
             {
                 sensorerrors++;
@@ -180,7 +180,7 @@ static void temp_reader(void* arg)
             else
             {
                 int age = now - sensors[i].prevsend;
-                printf("Measurement in sensor %d age is %d seconds\n", i, age);
+                //printf("Measurement in sensor %d age is %d seconds\n", i, age);
                 if ((diff) >= 0.2 || (age > NO_CHANGE_INTERVAL))
                 {
                     struct measurement meas;
