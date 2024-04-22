@@ -87,6 +87,24 @@ struct {
 } setup = { 15, 10, 0,
             15, 24.0, 5 , 1, 3 };
 
+
+PID pidCtl = {
+    .interval   = 15,
+    .target     = 27,
+    .pgain      = 5,
+    .igain      = 1,
+    .dgain      = 3,
+    .maxTune    = 0,
+    .prevValue  = 0,
+    .prevTune   = 0,
+    .tuneValue  = 0,
+    .prevMeasTs = 0,
+    .chipid = NULL,
+    .topic[0]   = 0
+};
+
+
+
 struct specialTemperature
 {
     char timestr[11];
@@ -283,14 +301,16 @@ static void readPidSetupJson(cJSON *root)
     }
     if (getJsonFloat(root, "target", &setup.target))
     {
-        pidcontroller_target(setup.target + elpriceInfluence);
+        pidcontroller_target(&pidCtl, setup.target + elpriceInfluence);
         flash_write_float("target", setup.target);
-        heater_setlevel(pidcontroller_tune(ntc_get_temperature()));
+        int tune = pidcontroller_tune(&pidCtl, ntc_get_temperature());
+        heater_setlevel(tune);
+        pidcontroller_send_tune(&pidCtl, tune, true);
     }
     if (reinit_needed) 
     {
-        pidcontroller_adjust(setup.interval,setup.kp, setup.ki, setup.kd);
-        heater_setlevel(pidcontroller_tune(ntc_get_temperature()));
+        pidcontroller_adjust(&pidCtl, setup.interval,setup.kp, setup.ki, setup.kd);
+        ntc_sendcurrent(); // this causes pid recalculation
     }
     flash_commitchanges();
 }
@@ -380,12 +400,12 @@ static bool handleJson(esp_mqtt_event_handle_t event)
                 if (isInArray(daystr, hitemp, hitempcnt))
                 {
                     printf("HITEMP IS ON!\n");
-                    newInfluence = 1.0;
+                    newInfluence = 1.0; // TODO: this should be in setup
                 }
                 else if (isInArray(daystr, lotemp, lotempcnt))
                 {
                     printf("LOTEMP IS ON!\n");
-                    newInfluence = -1.0;
+                    newInfluence = -1.0; // TODO: this should be in setup
                 }
                 else
                 {
@@ -395,7 +415,7 @@ static bool handleJson(esp_mqtt_event_handle_t event)
                 {
                     elpriceInfluence = newInfluence;
                     printf("changing target to %f\n", setup.target + elpriceInfluence);
-                    pidcontroller_target(setup.target + elpriceInfluence);
+                    pidcontroller_target(&pidCtl, setup.target + elpriceInfluence);
                 }
             }
         }
@@ -446,7 +466,7 @@ static void mqtt_event_handler(void *handler_args, esp_event_base_t base, int32_
             sendInfo(client, (uint8_t *) handler_args);
             sendSetup(client, (uint8_t *) handler_args);
             ntc_sendcurrent();
-            pidcontroller_send_currenttune();
+            pidcontroller_send_last(&pidCtl);
             connectcnt++;
         break;
 
@@ -500,7 +520,7 @@ void sntp_callback(struct timeval *tv)
     if (!firstSyncDone)
     {
         ntc_sendcurrent();
-        pidcontroller_send_currenttune();
+        pidcontroller_send_last(&pidCtl);
         firstSyncDone = true;
     }
 }
@@ -620,6 +640,7 @@ static esp_mqtt_client_handle_t mqtt_app_start(uint8_t *chipid)
         .credentials.client_id = client_id
     };
     esp_mqtt_client_handle_t client = esp_mqtt_client_init(&mqtt_cfg);
+
     /* The last argument may be used to pass data to the event handler, in this example mqtt_event_handler */
     esp_mqtt_client_register_event(client, ESP_EVENT_ANY_ID, mqtt_event_handler, chipid);
     esp_mqtt_client_start(client);
@@ -760,8 +781,8 @@ void app_main(void)
         ntc_init(chipid, setup.interval * 1000, setup.samples);
         display_brightness(setup.brightness);
         heater_init(setup.pwmlen, HEATER_POWERLEVELS);
-        pidcontroller_init(comminfo->mqtt_prefix, chipid, HEATER_POWERLEVELS, setup.interval, setup.kp, setup.ki, setup.kd);
-        pidcontroller_target(setup.target + elpriceInfluence);
+        pidcontroller_init(&pidCtl, comminfo->mqtt_prefix, chipid, HEATER_POWERLEVELS, setup.interval, setup.kp, setup.ki, setup.kd);
+        pidcontroller_target(&pidCtl, setup.target + elpriceInfluence);
         esp_mqtt_client_handle_t client = mqtt_app_start(chipid);
 
         ESP_LOGI(TAG, "[APP] All init done, app_main, last line.");
@@ -786,7 +807,7 @@ void app_main(void)
         float ds = 0.0;
 
         float sample = ntc_get_temperature();
-        tune = pidcontroller_tune(sample);
+        tune = pidcontroller_tune(&pidCtl, sample);
 
         printf("--> tune=%d\n", tune);
         heater_setlevel(tune);
@@ -820,8 +841,9 @@ void app_main(void)
                         ntc = meas.data.temperature;
                         if (isConnected) ntc_send(comminfo->mqtt_prefix, &meas, client);
                         display_show(ntc, ds);
-                        tune = pidcontroller_tune(ntc);
+                        tune = pidcontroller_tune(&pidCtl, ntc);
                         heater_setlevel(tune);
+                        pidcontroller_send_tune(&pidCtl, tune, false);
                         printf("--> tune=%d\n", tune);
                     break;
 
@@ -832,7 +854,7 @@ void app_main(void)
                     break;
 
                     case HEATER:
-                        if (isConnected) pidcontroller_send(&meas, client);
+                        if (isConnected) pidcontroller_publish(&pidCtl, &meas, client);
                     break;
 
                     default:
@@ -842,11 +864,7 @@ void app_main(void)
             else
             { 
                 printf("timeout\n");
-                ntc = ntc_get_temperature();
-                display_show(ntc, ds);
-                tune = pidcontroller_tune(ntc);
-                heater_setlevel(tune);
-                printf("tune=%d\n", tune);
+                ntc_sendcurrent();
             }
         }
     }

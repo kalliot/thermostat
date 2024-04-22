@@ -9,128 +9,103 @@
 #include "pidcontroller.h"
 
 
-struct pid {
-    int interval;
-    float target;
-    float pgain;
-    float igain;
-    float dgain;
-    float prevValue;
-    int maxTune;
-    int prevTune;
-    int tuneValue;
-    time_t prevMeasTs;
-    uint8_t *chipid;
-    char topic[64];
-} pidCtl = {
-    15,
-    .target = 27,
-    5,
-    1,
-    3,
-    0,
-    0,
-    0,
-    0,
-    0,
-    NULL,
-    "nonetopic"
-};
-
-
-static void send_changes(int newTune, bool forced)
+static void insert_queue(int tune)
 {
-    if (pidCtl.prevTune != newTune || forced)
-    {
+    struct measurement meas;
+    meas.id = HEATER;
+    meas.gpio = 0;
+    meas.data.count = tune;
+    xQueueSend(evt_queue, &meas, 0);
+}
 
-        struct measurement meas;
-        meas.id = HEATER;
-        meas.gpio = 0;
-        meas.data.count = newTune;
-        xQueueSend(evt_queue, &meas, 0);
-        pidCtl.prevTune = newTune;
+void pidcontroller_send_last(PID *p)
+{
+    insert_queue(p->prevTune);
+}
+
+void pidcontroller_send_tune(PID *p, int newTune, bool forced)
+{
+    if (p->prevTune != newTune || forced)
+    {
+        insert_queue(newTune);
+        p->prevTune = newTune;
     }
 }
 
 
-void pidcontroller_send_currenttune(void)
+void pidcontroller_adjust(PID *p, int interval, float kp, float ki, float kd)
 {
-    send_changes(pidCtl.tuneValue, true);
+    p->interval = interval;
+    p->pgain = kp;
+    p->igain = ki;
+    p->dgain = kd;
 }
 
 
-void pidcontroller_adjust(int interval, float kp, float ki, float kd)
+void pidcontroller_init(PID *p, char *prefix, uint8_t *chip, int max, int interval, float kp, float ki, float kd)
 {
-    pidCtl.interval = interval;
-    pidCtl.pgain = kp;
-    pidCtl.igain = ki;
-    pidCtl.dgain = kd;
-}
-
-
-void pidcontroller_init(char *prefix, uint8_t *chip, int max, int interval, float kp, float ki, float kd)
-{
-    pidCtl.chipid = chip;
-    sprintf(pidCtl.topic,"%s/thermostat/%x%x%x/parameters/level", prefix, pidCtl.chipid[3], pidCtl.chipid[4], pidCtl.chipid[5]);
-    time(&pidCtl.prevMeasTs);
-    pidCtl.maxTune = max;
-    pidcontroller_adjust(interval, kp, ki, kd);
+    p->chipid = chip;
+    sprintf(p->topic,"%s/thermostat/%x%x%x/parameters/level", prefix, p->chipid[3], p->chipid[4], p->chipid[5]);
+    time(&p->prevMeasTs);
+    p->maxTune = max;
+    p->integral = 0;
+    pidcontroller_adjust(p, interval, kp, ki, kd);
     return;
 }
 
 
 // changing the target while running.
-void pidcontroller_target(float newTarget)
+void pidcontroller_target(PID *p, float newTarget)
 {
-    if (newTarget != pidCtl.target)
+    if (newTarget != p->target)
     {
-        pidCtl.target = newTarget;
-        pidcontroller_tune(pidCtl.prevValue);
-        send_changes(pidCtl.tuneValue, true);
+        p->target = newTarget;
+        pidcontroller_send_tune(p, pidcontroller_tune(p, p->prevValue), true);
     }    
 }
 
 
-int pidcontroller_tune(float measurement)
+int pidcontroller_tune(PID *p, float measurement)
 {
-    float integral, differential;
+    float differential;
     int tuneval, elapsed;
-    float error = pidCtl.target - measurement;
+    float error = p->target - measurement;
     float correction = 1;
     time_t now;
     
     
     time(&now);
-    elapsed = now - pidCtl.prevMeasTs;
+    elapsed = now - p->prevMeasTs;
 
-    if (elapsed != 0 && elapsed < 10 * pidCtl.interval)   // first round and after system has refreshed network time
-    {
-        correction = ((float) pidCtl.interval) / ((float) elapsed);
-        printf("elapse %d seconds, correction for interval is %f", elapsed, correction);
+    if (elapsed != 0 && elapsed < 10 * p->interval)   // first round and after system has refreshed network time
+    {                                                 // elapsed is huge, just after ntc time sync, so reject it.
+        correction = ((float) p->interval) / ((float) elapsed);
+        printf("elapsed %d seconds, correction for interval is %.3f\n", elapsed, correction);
+        p->integral += p->igain * error * correction; // lastest fix
+        if (p->integral > p->maxTune)
+            p->integral = p->maxTune;
+        if (p->integral < 0)
+            p->integral = 0;
     }
-    
 
-    integral = correction * pidCtl.igain * error;
-    if (integral > pidCtl.maxTune)
-        integral = pidCtl.maxTune;
-    if (integral < 0)
-        integral = 0;
+    differential = p->dgain * (measurement - p->prevValue);
+    float ft = p->pgain * error + p->integral - differential / correction;
+    tuneval = ft + 0.5; // correct rounding from float to int. We have only positive values.
 
-    differential = measurement - pidCtl.prevValue;
-    tuneval = pidCtl.pgain * error + integral - pidCtl.dgain / correction * differential;
-    if (tuneval > pidCtl.maxTune)
-        tuneval = pidCtl.maxTune;
+    printf("pc=%.04f, ic=%.4f, dc=%.04f, precise tune is %.2f\n",p->pgain * error, p->integral, differential / correction, ft);
+
+    if (tuneval > p->maxTune)
+        tuneval = p->maxTune;
     if (tuneval < 0)
         tuneval = 0;
 
-    pidCtl.prevValue = measurement;
-    pidCtl.prevMeasTs = now;
-    send_changes(tuneval, false);
+    p->prevValue = measurement;
+    p->prevMeasTs = now;
     return tuneval;
 }
 
 
-bool pidcontroller_send(struct measurement *data, esp_mqtt_client_handle_t client)
+bool pidcontroller_publish(PID *p, struct measurement *data, esp_mqtt_client_handle_t client)
 {
     time_t now;
 
@@ -139,10 +114,10 @@ bool pidcontroller_send(struct measurement *data, esp_mqtt_client_handle_t clien
 
     static char *datafmt = "{\"dev\":\"%x%x%x\",\"id\":\"thermostat\",\"value\":%d,\"ts\":%jd}";
     sprintf(jsondata, datafmt,
-                pidCtl.chipid[3],pidCtl.chipid[4],pidCtl.chipid[5],
+                p->chipid[3],p->chipid[4],p->chipid[5],
                 data->data.count,
                 now);
-    esp_mqtt_client_publish(client, pidCtl.topic, jsondata , 0, 0, 1);
+    esp_mqtt_client_publish(client, p->topic, jsondata , 0, 0, 1);
     sendcnt++;
     gpio_set_level(BLINK_GPIO, false);
     return true;
