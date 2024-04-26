@@ -14,4 +14,4 @@ second interval.
 
 3. Sends its data to mqtt server, so it's behavior is easily reported.
 
-![Schema](https://github.com/kalliot/thermostat/blob/master/ssd.png?raw=true "Schematic of solid state relay control")
+![Schema](https://github.com/kalliot/thermostat/blob/master/images/ssd.png?raw=true "Schematic of solid state relay control")

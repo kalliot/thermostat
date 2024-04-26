@@ -76,16 +76,22 @@ struct {
     // ntc
     int interval;
     int samples;
-
     int brightness;
+
     // pidcontroller
-    int pwmlen;
-    float target;
     float kp;
     float ki;
     float kd;
+
+    // heater
+    int pwmlen;
+    float target;
+    float hiboost;
+    float lodeduct;
+
 } setup = { 15, 10, 0,
-            15, 24.0, 5 , 1, 3 };
+            5 , 1, 3,
+            15, 24, 1, 1};
 
 
 PID pidCtl = {
@@ -278,12 +284,6 @@ static void readPidSetupJson(cJSON *root)
 {
     bool reinit_needed = false;
 
-    if (getJsonInt(root,"pwmlen", &setup.pwmlen))
-    {
-        heater_reconfig(setup.pwmlen, HEATER_POWERLEVELS);
-        flash_write("pwmlen", setup.pwmlen);
-    }
-
     if (getJsonFloat(root, "pidkp", &setup.kp))
     {
         flash_write_float("pidkp", setup.kp);
@@ -299,14 +299,6 @@ static void readPidSetupJson(cJSON *root)
         flash_write_float("pidkd", setup.kd);
         reinit_needed = true;
     }
-    if (getJsonFloat(root, "target", &setup.target))
-    {
-        pidcontroller_target(&pidCtl, setup.target + elpriceInfluence);
-        flash_write_float("target", setup.target);
-        int tune = pidcontroller_tune(&pidCtl, ntc_get_temperature());
-        heater_setlevel(tune);
-        pidcontroller_send_tune(&pidCtl, tune, true);
-    }
     if (reinit_needed) 
     {
         pidcontroller_adjust(&pidCtl, setup.interval,setup.kp, setup.ki, setup.kd);
@@ -315,29 +307,37 @@ static void readPidSetupJson(cJSON *root)
     flash_commitchanges();
 }
 
+
+
+
 /*
 ** Setup messages
 {"dev":"5bdddc","id":"brightness","value":0}
 {"dev":"5bdddc","id":"calibratehigh","temperature":25.38}                       ntc should be in this temperature
 {"dev":"5bdddc","id":"calibratelow","temperature":20.02}                        ntc should be in this temperature
+{"dev":"5bdddc","id":"calibratesave"}                                           ntc should be in this temperature
 {"dev":"5bdddc","id":"ntcreader","interval":15, "samples":10}                   ntc reader averages the temperature in every 15 seconds, from samples amount.
-{"dev":"5bdddc","id":"pidsetup","pwmlen":15,"target":25.50,"pidkp":5.00,"pidki":1.0,"pidkd":3.0}
+{"dev":"5bdddc","id":"pidsetup","pidkp":5.00,"pidki":1.0,"pidkd":3.0}
+{"dev":"5bdddc","id":"heatsetup","pwmlen":15,"target":32,"hiboost":1,"lodeduct":1}
 */
 
 static bool handleJson(esp_mqtt_event_handle_t event)
 {
     cJSON *root = cJSON_Parse(event->data);
     bool ret = false;
+    char id[20];
 
     if (root != NULL)
     {
-        if (!strcmp(getJsonStr(root,"id"),"pidsetup"))
+        strcpy(id,getJsonStr(root,"id"));
+
+        if (!strcmp(id,"pidsetup"))
         {
             printf("got pid setup\n");
             readPidSetupJson(root);
             ret = true;
         }
-        if (!strcmp(getJsonStr(root,"id"),"ntcreader"))
+        if (!strcmp(id,"ntcreader"))
         {
             if (getJsonInt(root, "interval", &setup.interval))
             {
@@ -350,7 +350,7 @@ static bool handleJson(esp_mqtt_event_handle_t event)
                 ret = true;
             }
         }
-        else if (!strcmp(getJsonStr(root,"id"),"calibratelow"))
+        else if (!strcmp(id,"calibratelow"))
         {
             float deflow = 20;
             if (getJsonFloat(root, "temperature", &deflow))
@@ -359,7 +359,7 @@ static bool handleJson(esp_mqtt_event_handle_t event)
                 ntc_set_calibr_low(deflow);
             }
         }
-        else if (!strcmp(getJsonStr(root,"id"),"calibratehigh"))
+        else if (!strcmp(id,"calibratehigh"))
         {
             float defhigh = 30;
             if (getJsonFloat(root, "temperature", &defhigh))
@@ -368,11 +368,11 @@ static bool handleJson(esp_mqtt_event_handle_t event)
                 ntc_set_calibr_high(defhigh);
             }
         }
-        else if (!strcmp(getJsonStr(root,"id"),"calibratesave"))
+        else if (!strcmp(id,"calibratesave"))
         {
             ntc_save_calibrations();
         }
-        else if (!strcmp(getJsonStr(root,"id"),"brightness"))
+        else if (!strcmp(id,"brightness"))
         {
             if (getJsonInt(root, "value", &setup.brightness))
             {
@@ -381,16 +381,40 @@ static bool handleJson(esp_mqtt_event_handle_t event)
                 display_brightness(setup.brightness);
             }
         }
-        else if (!strcmp(getJsonStr(root,"id"),"awhightemp"))
+        else if (!strcmp(id,"awhightemp"))
         {
             hitemp = jsonToHiLoTable(root,"values", &hitempcnt, hitemp);
         }
-        else if (!strcmp(getJsonStr(root,"id"),"awlowtemp"))
+        else if (!strcmp(id,"awlowtemp"))
         {
             lotemp = jsonToHiLoTable(root,"values", &lotempcnt, lotemp);
         }
+        else if (!strcmp(id,"heatsetup"))
+        {
+            if (getJsonInt(root,"pwmlen", &setup.pwmlen))
+            {
+                heater_reconfig(setup.pwmlen, HEATER_POWERLEVELS);
+                flash_write("pwmlen", setup.pwmlen);
+            }
+            if (getJsonFloat(root, "target", &setup.target))
+            {
+                pidcontroller_target(&pidCtl, setup.target + elpriceInfluence);
+                flash_write_float("target", setup.target);
+                int tune = pidcontroller_tune(&pidCtl, ntc_get_temperature());
+                heater_setlevel(tune);
+                pidcontroller_send_tune(&pidCtl, tune, true);
+            }
+            if (getJsonFloat(root, "hiboost", &setup.hiboost))
+            {
+                flash_write_float("hiboost", setup.hiboost);
+            }
+            if (getJsonFloat(root, "lodeduct", &setup.lodeduct))
+            {
+                flash_write_float("lodeduct", setup.lodeduct);
+            }
+        }
         // hour has changed
-        else if (!strcmp(getJsonStr(root,"id"),"elprice"))
+        else if (!strcmp(id,"elprice"))
         {
             char *topicpostfix = &event->topic[event->topic_len - 7];
             if (!memcmp(topicpostfix,"current",7))
@@ -400,12 +424,12 @@ static bool handleJson(esp_mqtt_event_handle_t event)
                 if (isInArray(daystr, hitemp, hitempcnt))
                 {
                     printf("HITEMP IS ON!\n");
-                    newInfluence = 1.0; // TODO: this should be in setup
+                    newInfluence = setup.hiboost;
                 }
                 else if (isInArray(daystr, lotemp, lotempcnt))
                 {
                     printf("LOTEMP IS ON!\n");
-                    newInfluence = -1.0; // TODO: this should be in setup
+                    newInfluence = -1.0 * setup.lodeduct;
                 }
                 else
                 {
@@ -589,6 +613,7 @@ static void sendInfo(esp_mqtt_client_handle_t client, uint8_t *chipid)
     gpio_set_level(BLINK_GPIO, false);
 }
 
+// {"dev":"5bdddc","id":"heatsetup","pwmlen":15,"target":25.50,"hiboost":1,"lodeduct":1}
 
 static void sendSetup(esp_mqtt_client_handle_t client, uint8_t *chipid)
 {
@@ -598,11 +623,10 @@ static void sendSetup(esp_mqtt_client_handle_t client, uint8_t *chipid)
 
     sprintf(setupTopic,"%s/thermostat/%x%x%x/setup/pid",
          comminfo->mqtt_prefix, chipid[3],chipid[4],chipid[5]);
-    sprintf(jsondata, "{\"dev\":\"%x%x%x\",\"id\":\"pidsetup\",\"pwmlen\":%d,"
-                      "\"target\":%2.2f,\"pidkp\":%2.2f,\"pidki\":%2.2f,\"pidkd\":%2.2f}",
+    sprintf(jsondata, "{\"dev\":\"%x%x%x\",\"id\":\"pidsetup\","
+                      "\"pidkp\":%2.2f,\"pidki\":%2.2f,\"pidkd\":%2.2f}",
                 chipid[3],chipid[4],chipid[5],
-                setup.pwmlen, setup.target, setup.kp,
-                setup.ki, setup.kd);
+                setup.kp, setup.ki, setup.kd);
     esp_mqtt_client_publish(client, setupTopic, jsondata , 0, 0, 1);
     sendcnt++;
 
@@ -611,6 +635,16 @@ static void sendSetup(esp_mqtt_client_handle_t client, uint8_t *chipid)
     sprintf(jsondata, "{\"dev\":\"%x%x%x\",\"id\":\"ntcreader\",\"interval\":%d,\"samples\":%d}",
                 chipid[3],chipid[4],chipid[5],
                 setup.interval, setup.samples);
+    esp_mqtt_client_publish(client, setupTopic, jsondata , 0, 0, 1);
+    sendcnt++;
+
+    sprintf(setupTopic,"%s/thermostat/%x%x%x/setup/heat",
+         comminfo->mqtt_prefix, chipid[3],chipid[4],chipid[5]);
+    sprintf(jsondata, "{\"dev\":\"%x%x%x\",\"id\":\"heatsetup\","
+                      "\"pwmlen\":%d,\"target\":%2.2f,"
+                      "\"hiboost\":%2.2f,\"lodeduct\":%2.2f}",
+                chipid[3],chipid[4],chipid[5],
+                setup.pwmlen , setup.target, setup.hiboost, setup.lodeduct);
     esp_mqtt_client_publish(client, setupTopic, jsondata , 0, 0, 1);
     sendcnt++;
 
@@ -772,16 +806,20 @@ void app_main(void)
         setup.pwmlen       = flash_read("pwmlen", setup.pwmlen);
         setup.interval     = flash_read("interval", setup.interval);
         setup.brightness   = flash_read("brightness", setup.brightness);
-        setup.samples      = flash_read("samples", setup.samples);
-        setup.target       = flash_read_float("target", setup.target);
+
         setup.kp           = flash_read_float("pidkp", setup.kp);
         setup.ki           = flash_read_float("pidki", setup.ki);
         setup.kd           = flash_read_float("pidkd", setup.kd);
 
+        setup.samples      = flash_read("samples", setup.samples);
+        setup.target       = flash_read_float("target", setup.target);
+        setup.hiboost      = flash_read_float("hiboost", setup.hiboost);
+        setup.lodeduct     = flash_read_float("lodeduct", setup.lodeduct);
+
         ntc_init(chipid, setup.interval * 1000, setup.samples);
         display_brightness(setup.brightness);
         heater_init(setup.pwmlen, HEATER_POWERLEVELS);
-        pidcontroller_init(&pidCtl, comminfo->mqtt_prefix, chipid, HEATER_POWERLEVELS, setup.interval, setup.kp, setup.ki, setup.kd);
+        pidcontroller_init(&pidCtl, comminfo->mqtt_prefix, chipid, HEATER_POWERLEVELS-1, setup.interval, setup.kp, setup.ki, setup.kd);
         pidcontroller_target(&pidCtl, setup.target + elpriceInfluence);
         esp_mqtt_client_handle_t client = mqtt_app_start(chipid);
 

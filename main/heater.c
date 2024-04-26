@@ -87,16 +87,15 @@ void heater_close(void)
 
 void heater_setlevel(int level)
 {
-    if (level >= 0 && level < levelCnt)
+    if (level < 0) level = 0;
+    if (level > levelCnt) level = levelCnt;
+    if( xSemaphoreTake(mutex, (TickType_t) 1000) == pdTRUE)
     {
-        if( xSemaphoreTake(mutex, (TickType_t) 1000) == pdTRUE)
+        if (currentLevel != level)
         {
-            if (currentLevel != level)
-            {
-                currentLevel = level;
-            }
-            xSemaphoreGive(mutex);
+            currentLevel = level;
         }
+        xSemaphoreGive(mutex);
     }
     return;
 }

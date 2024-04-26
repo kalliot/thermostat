@@ -81,7 +81,7 @@ int pidcontroller_tune(PID *p, float measurement)
     {                                                 // elapsed is huge, just after ntc time sync, so reject it.
         correction = ((float) p->interval) / ((float) elapsed);
         printf("elapsed %d seconds, correction for interval is %.3f\n", elapsed, correction);
-        p->integral += p->igain * error * correction; // lastest fix
+        p->integral += p->igain * error * correction;
         if (p->integral > p->maxTune)
             p->integral = p->maxTune;
         if (p->integral < 0)
