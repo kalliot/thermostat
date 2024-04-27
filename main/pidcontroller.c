@@ -33,23 +33,24 @@ void pidcontroller_send_tune(PID *p, int newTune, bool forced)
 }
 
 
-void pidcontroller_adjust(PID *p, int interval, float kp, float ki, float kd)
+void pidcontroller_adjust(PID *p, float maxTemp, int interval, float kp, float ki, float kd)
 {
     p->interval = interval;
     p->pgain = kp;
     p->igain = ki;
     p->dgain = kd;
+    p->maxTemp = maxTemp;
 }
 
 
-void pidcontroller_init(PID *p, char *prefix, uint8_t *chip, int max, int interval, float kp, float ki, float kd)
+void pidcontroller_init(PID *p, char *prefix, uint8_t *chip, float maxTemp, int max, int interval, float kp, float ki, float kd)
 {
     p->chipid = chip;
     sprintf(p->topic,"%s/thermostat/%x%x%x/parameters/level", prefix, p->chipid[3], p->chipid[4], p->chipid[5]);
     time(&p->prevMeasTs);
     p->maxTune = max;
     p->integral = 0;
-    pidcontroller_adjust(p, interval, kp, ki, kd);
+    pidcontroller_adjust(p, maxTemp, interval, kp, ki, kd);
     return;
 }
 
@@ -57,6 +58,7 @@ void pidcontroller_init(PID *p, char *prefix, uint8_t *chip, int max, int interv
 // changing the target while running.
 void pidcontroller_target(PID *p, float newTarget)
 {
+    if (newTarget > p->maxTemp) newTarget = p->maxTemp;
     if (newTarget != p->target)
     {
         p->target = newTarget;
@@ -77,8 +79,8 @@ int pidcontroller_tune(PID *p, float measurement)
     time(&now);
     elapsed = now - p->prevMeasTs;
 
-    if (elapsed != 0 && elapsed < 10 * p->interval)   // first round and after system has refreshed network time
-    {                                                 // elapsed is huge, just after ntc time sync, so reject it.
+    if (elapsed >= p->interval && elapsed < 10 * p->interval)   // first round and after system has refreshed network time
+    {                                                          // elapsed is huge, just after ntc time sync, so reject it.
         correction = ((float) p->interval) / ((float) elapsed);
         printf("elapsed %d seconds, correction for interval is %.3f\n", elapsed, correction);
         p->integral += p->igain * error * correction;
@@ -94,11 +96,17 @@ int pidcontroller_tune(PID *p, float measurement)
 
     printf("pc=%.04f, ic=%.4f, dc=%.04f, precise tune is %.2f\n",p->pgain * error, p->integral, differential / correction, ft);
 
-    if (tuneval > p->maxTune)
-        tuneval = p->maxTune;
-    if (tuneval < 0)
+    if (measurement > p->maxTemp)
+    {
         tuneval = 0;
-
+    }
+    else
+    {
+        if (tuneval > p->maxTune)
+            tuneval = p->maxTune;
+        if (tuneval < 0)
+            tuneval = 0;
+    }
     p->prevValue = measurement;
     p->prevMeasTs = now;
     return tuneval;
