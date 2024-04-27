@@ -79,6 +79,7 @@ struct {
     int brightness;
 
     // pidcontroller
+    float max;
     float kp;
     float ki;
     float kd;
@@ -90,7 +91,7 @@ struct {
     float lodeduct;
 
 } setup = { 15, 10, 0,
-            5 , 1, 3,
+            35, 5 , 1, 3,
             15, 24, 1, 1};
 
 
@@ -284,6 +285,11 @@ static void readPidSetupJson(cJSON *root)
 {
     bool reinit_needed = false;
 
+    if (getJsonFloat(root, "max", &setup.max))
+    {
+        flash_write_float("pidmax", setup.max);
+        reinit_needed = true;
+    }
     if (getJsonFloat(root, "pidkp", &setup.kp))
     {
         flash_write_float("pidkp", setup.kp);
@@ -301,7 +307,7 @@ static void readPidSetupJson(cJSON *root)
     }
     if (reinit_needed) 
     {
-        pidcontroller_adjust(&pidCtl, setup.interval,setup.kp, setup.ki, setup.kd);
+        pidcontroller_adjust(&pidCtl, setup.max, setup.interval,setup.kp, setup.ki, setup.kd);
         ntc_sendcurrent(); // this causes pid recalculation
     }
     flash_commitchanges();
@@ -313,12 +319,12 @@ static void readPidSetupJson(cJSON *root)
 /*
 ** Setup messages
 {"dev":"5bdddc","id":"brightness","value":0}
-{"dev":"5bdddc","id":"calibratehigh","temperature":25.38}                       ntc should be in this temperature
-{"dev":"5bdddc","id":"calibratelow","temperature":20.02}                        ntc should be in this temperature
-{"dev":"5bdddc","id":"calibratesave"}                                           ntc should be in this temperature
-{"dev":"5bdddc","id":"ntcreader","interval":15, "samples":10}                   ntc reader averages the temperature in every 15 seconds, from samples amount.
-{"dev":"5bdddc","id":"pidsetup","pidkp":5.00,"pidki":1.0,"pidkd":3.0}
-{"dev":"5bdddc","id":"heatsetup","pwmlen":15,"target":32,"hiboost":1,"lodeduct":1}
+{"dev":"5bdddc","id":"calibratehigh","temperature":25.38}                           ntc should be in this temperature
+{"dev":"5bdddc","id":"calibratelow","temperature":20.02}                            ntc should be in this temperature
+{"dev":"5bdddc","id":"calibratesave"}                                               commit the calibrations
+{"dev":"5bdddc","id":"ntcreader","interval":15, "samples":10}                       ntc reader averages the temperature in every 15 seconds, from samples amount.
+{"dev":"5bdddc","id":"pidsetup","max":35,"pidkp":5.00,"pidki":1.0,"pidkd":3.0}
+{"dev":"5bdddc","id":"heatsetup","pwmlen":15,"target":32,"hiboost":1,"lodeduct":1}  stock price influence to target temperature
 */
 
 static bool handleJson(esp_mqtt_event_handle_t event)
@@ -624,9 +630,9 @@ static void sendSetup(esp_mqtt_client_handle_t client, uint8_t *chipid)
     sprintf(setupTopic,"%s/thermostat/%x%x%x/setup/pid",
          comminfo->mqtt_prefix, chipid[3],chipid[4],chipid[5]);
     sprintf(jsondata, "{\"dev\":\"%x%x%x\",\"id\":\"pidsetup\","
-                      "\"pidkp\":%2.2f,\"pidki\":%2.2f,\"pidkd\":%2.2f}",
+                      "\"max\":%2.2f,\"pidkp\":%2.2f,\"pidki\":%2.2f,\"pidkd\":%2.2f}",
                 chipid[3],chipid[4],chipid[5],
-                setup.kp, setup.ki, setup.kd);
+                setup.max, setup.kp, setup.ki, setup.kd);
     esp_mqtt_client_publish(client, setupTopic, jsondata , 0, 0, 1);
     sendcnt++;
 
@@ -807,6 +813,7 @@ void app_main(void)
         setup.interval     = flash_read("interval", setup.interval);
         setup.brightness   = flash_read("brightness", setup.brightness);
 
+        setup.max          = flash_read_float("pidmax", setup.max);
         setup.kp           = flash_read_float("pidkp", setup.kp);
         setup.ki           = flash_read_float("pidki", setup.ki);
         setup.kd           = flash_read_float("pidkd", setup.kd);
@@ -819,7 +826,7 @@ void app_main(void)
         ntc_init(chipid, setup.interval * 1000, setup.samples);
         display_brightness(setup.brightness);
         heater_init(setup.pwmlen, HEATER_POWERLEVELS);
-        pidcontroller_init(&pidCtl, comminfo->mqtt_prefix, chipid, HEATER_POWERLEVELS-1, setup.interval, setup.kp, setup.ki, setup.kd);
+        pidcontroller_init(&pidCtl, comminfo->mqtt_prefix, chipid, setup.max, HEATER_POWERLEVELS-1, setup.interval, setup.kp, setup.ki, setup.kd);
         pidcontroller_target(&pidCtl, setup.target + elpriceInfluence);
         esp_mqtt_client_handle_t client = mqtt_app_start(chipid);
 
