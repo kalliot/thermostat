@@ -35,6 +35,7 @@
 #include "ntcreader.h"
 #include "heater.h"
 #include "pidcontroller.h"
+#include "ota/ota.h"
 #include "mqtt_client.h"
 
 #include "apwebserver/server.h"
@@ -45,7 +46,7 @@
 #define STATEINPUT_GPIO       33
 #define STATEINPUT_GPIO2      32
 #define STATISTICS_INTERVAL 1800
-#define PROGRAM_VERSION     0.04
+#define PROGRAM_VERSION     0.05
 #define ESP_INTR_FLAG_DEFAULT  0
 #define HEATER_POWERLEVELS    30
 #define NTC_INTERVAL_MS     5000
@@ -139,6 +140,7 @@ uint16_t sensorerrors = 0;
 static char statisticsTopic[64];
 static char setupTopic[64];
 static char elpriceTopic[64];
+static char otaUpdateTopic[64];
 static time_t started;
 static uint16_t maxQElements = 0;
 static int retry_num = 0;
@@ -449,6 +451,14 @@ static bool handleJson(esp_mqtt_event_handle_t event)
                 }
             }
         }
+        else if (!strcmp(id,"otaupdate"))
+        {
+            char *fname = getJsonStr(root,"file");
+            if (strlen(fname) > 5)
+            {
+                ota_start(fname);
+            }    
+        }
         cJSON_Delete(root);
     }
     return ret;
@@ -491,6 +501,9 @@ static void mqtt_event_handler(void *handler_args, esp_event_base_t base, int32_
 
             msg_id = esp_mqtt_client_subscribe(client, elpriceTopic , 0);
             ESP_LOGI(TAG, "sent subscribe %s successful, msg_id=%d", elpriceTopic, msg_id);
+
+            msg_id = esp_mqtt_client_subscribe(client, otaUpdateTopic , 0);
+            ESP_LOGI(TAG, "sent subscribe %s successful, msg_id=%d", otaUpdateTopic, msg_id);
 
             gpio_set_level(MQTTSTATUS_GPIO, true);
             sendInfo(client, (uint8_t *) handler_args);
@@ -712,6 +725,7 @@ static void wifi_event_handler(void *event_handler_arg, esp_event_base_t event_b
         printf("Wifi got IP\n");
         gpio_set_level(WLANSTATUS_GPIO, true);
         retry_num = 0;
+        //ota_cancel_rollback(); 
     }
 }
 
@@ -806,6 +820,7 @@ void app_main(void)
         gpio_install_isr_service(ESP_INTR_FLAG_DEFAULT);
         factoryreset_init();
         wifi_connect(comminfo->ssid, comminfo->password);
+        esp_wifi_set_ps(WIFI_PS_NONE);
         evt_queue = xQueueCreate(10, sizeof(struct measurement));
         temperatures_init(TEMP_BUS, chipid);
 
@@ -824,6 +839,7 @@ void app_main(void)
         setup.lodeduct     = flash_read_float("lodeduct", setup.lodeduct);
 
         ntc_init(chipid, setup.interval * 1000, setup.samples);
+        ota_init(comminfo->mqtt_prefix, chipid);
         display_brightness(setup.brightness);
         heater_init(setup.pwmlen, HEATER_POWERLEVELS);
         pidcontroller_init(&pidCtl, comminfo->mqtt_prefix, chipid, setup.max, HEATER_POWERLEVELS-1, setup.interval, setup.kp, setup.ki, setup.kd);
@@ -839,6 +855,8 @@ void app_main(void)
         sprintf(setupTopic,"%s/thermostat/%x%x%x/setsetup",
             comminfo->mqtt_prefix, chipid[3],chipid[4],chipid[5]);
 
+        sprintf(otaUpdateTopic,"%s/thermostat/%x%x%x/otaupdate",
+            comminfo->mqtt_prefix, chipid[3],chipid[4],chipid[5]);
         sprintf(elpriceTopic,"%s/elprice/#", comminfo->mqtt_prefix);
 
         // it is very propable, we will not get correct timestamp here.
@@ -901,6 +919,10 @@ void app_main(void)
                     case HEATER:
                         if (isConnected) pidcontroller_publish(&pidCtl, &meas, client);
                     break;
+
+                    case OTA:
+                        ota_status_publish(&meas, client);
+                        break;
 
                     default:
                         printf("unknown data type\n" );

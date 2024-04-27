@@ -7,7 +7,8 @@ enum meastype
 {
     NTC,
     HEATER,
-    TEMPERATURE
+    TEMPERATURE,
+    OTA
 };
 
 struct measurement {

@@ -79,8 +79,8 @@ int pidcontroller_tune(PID *p, float measurement)
     time(&now);
     elapsed = now - p->prevMeasTs;
 
-    if (elapsed != 0 && elapsed < 10 * p->interval)   // first round and after system has refreshed network time
-    {                                                 // elapsed is huge, just after ntc time sync, so reject it.
+    if (elapsed >= p->interval && elapsed < 10 * p->interval)   // first round and after system has refreshed network time
+    {                                                          // elapsed is huge, just after ntc time sync, so reject it.
         correction = ((float) p->interval) / ((float) elapsed);
         printf("elapsed %d seconds, correction for interval is %.3f\n", elapsed, correction);
         p->integral += p->igain * error * correction;
