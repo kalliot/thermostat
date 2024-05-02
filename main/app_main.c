@@ -4,11 +4,12 @@
 #include <string.h>
 #include <time.h>
 #include <math.h>
-#include <sntp.h>
+
 #include <stdlib.h>
 
 #include "cJSON.h"
 #include "esp_wifi.h"
+#include "esp_sntp.h"
 #include "esp_system.h"
 #include "esp_event.h"
 #include "esp_netif.h"
@@ -46,7 +47,6 @@
 #define STATEINPUT_GPIO       33
 #define STATEINPUT_GPIO2      32
 #define STATISTICS_INTERVAL 1800
-#define PROGRAM_VERSION     0.05
 #define ESP_INTR_FLAG_DEFAULT  0
 #define HEATER_POWERLEVELS    30
 #define NTC_INTERVAL_MS     5000
@@ -125,7 +125,6 @@ int hitempcnt = 0;
 int lotempcnt = 0;
 
 // globals
-
 struct netinfo *comminfo;
 QueueHandle_t evt_queue = NULL;
 char jsondata[256];
@@ -138,14 +137,14 @@ static uint16_t disconnectcnt = 0;
 uint16_t sensorerrors = 0;
 
 static char statisticsTopic[64];
-static char setupTopic[64];
+static char setupTopic[52];
 static char elpriceTopic[64];
 static char otaUpdateTopic[64];
 static time_t started;
 static uint16_t maxQElements = 0;
 static int retry_num = 0;
 static float elpriceInfluence = 0.0;
-
+static char *program_version = ""; 
 static void sendStatistics(esp_mqtt_client_handle_t client, uint8_t *chipid, time_t now);
 static void sendSetup(esp_mqtt_client_handle_t client, uint8_t *chipid);
 static void sendInfo(esp_mqtt_client_handle_t client, uint8_t *chipid);
@@ -363,8 +362,10 @@ static bool handleJson(esp_mqtt_event_handle_t event)
             float deflow = 20;
             if (getJsonFloat(root, "temperature", &deflow))
             {
-                printf("got calibration low %f\n", deflow);
-                ntc_set_calibr_low(deflow);
+                int raw = -1;
+                getJsonInt(root,"raw", &raw);
+                printf("got calibration low %f, raw %d\n", deflow, raw);
+                ntc_set_calibr_low(deflow, raw);
             }
         }
         else if (!strcmp(id,"calibratehigh"))
@@ -372,8 +373,10 @@ static bool handleJson(esp_mqtt_event_handle_t event)
             float defhigh = 30;
             if (getJsonFloat(root, "temperature", &defhigh))
             {
-                printf("got calibration high %f\n", defhigh);
-                ntc_set_calibr_high(defhigh);
+                int raw = -1;
+                getJsonInt(root,"raw", &raw);
+                printf("got calibration high %f, raw %d\n", defhigh, raw);
+                ntc_set_calibr_high(defhigh, raw);
             }
         }
         else if (!strcmp(id,"calibratesave"))
@@ -571,9 +574,9 @@ void sntp_callback(struct timeval *tv)
 
 static void sntp_start()
 {
-    sntp_setoperatingmode(SNTP_OPMODE_POLL);
-    sntp_setservername(0, "pool.ntp.org");
-    sntp_init();
+    esp_sntp_setoperatingmode(SNTP_OPMODE_POLL);
+    esp_sntp_setservername(0, "pool.ntp.org");
+    esp_sntp_init();
     sntp_set_time_sync_notification_cb(sntp_callback);
 }
 
@@ -620,11 +623,11 @@ static void sendInfo(esp_mqtt_client_handle_t client, uint8_t *chipid)
 
     sprintf(infoTopic,"%s/thermostat/%x%x%x/info",
          comminfo->mqtt_prefix, chipid[3],chipid[4],chipid[5]);
-    sprintf(jsondata, "{\"dev\":\"%x%x%x\",\"id\":\"info\",\"memfree\":%d,\"idfversion\":\"%s\",\"progversion\":%.2f, \"tempsensors\":[%s]}",
+    sprintf(jsondata, "{\"dev\":\"%x%x%x\",\"id\":\"info\",\"memfree\":%d,\"idfversion\":\"%s\",\"progversion\":\"%s\", \"tempsensors\":[%s]}",
                 chipid[3],chipid[4],chipid[5],
                 esp_get_free_heap_size(),
                 esp_get_idf_version(),
-                PROGRAM_VERSION,
+                program_version,
                 temperatures_info());
     esp_mqtt_client_publish(client, infoTopic, jsondata , 0, 0, 1);
     sendcnt++;
@@ -632,47 +635,65 @@ static void sendInfo(esp_mqtt_client_handle_t client, uint8_t *chipid)
     gpio_set_level(BLINK_GPIO, false);
 }
 
+static char *mkSetupTopic(char *item, char *buff, uint8_t *chipid)
+{
+    sprintf(buff,"%s/thermostat/%x%x%x/setup/%s",
+         comminfo->mqtt_prefix, chipid[3],chipid[4],chipid[5], item);
+    return buff;
+}     
+
+
 // {"dev":"5bdddc","id":"heatsetup","pwmlen":15,"target":25.50,"hiboost":1,"lodeduct":1}
 
 static void sendSetup(esp_mqtt_client_handle_t client, uint8_t *chipid)
 {
     gpio_set_level(BLINK_GPIO, true);
 
-    char setupTopic[42];
+    char setupTopic[64];
 
-    sprintf(setupTopic,"%s/thermostat/%x%x%x/setup/pid",
-         comminfo->mqtt_prefix, chipid[3],chipid[4],chipid[5]);
     sprintf(jsondata, "{\"dev\":\"%x%x%x\",\"id\":\"pidsetup\","
                       "\"max\":%2.2f,\"pidkp\":%2.2f,\"pidki\":%2.2f,\"pidkd\":%2.2f}",
                 chipid[3],chipid[4],chipid[5],
                 setup.max, setup.kp, setup.ki, setup.kd);
-    esp_mqtt_client_publish(client, setupTopic, jsondata , 0, 0, 1);
+    esp_mqtt_client_publish(client, mkSetupTopic("pid",setupTopic, chipid), jsondata , 0, 0, 1);
     sendcnt++;
 
-    sprintf(setupTopic,"%s/thermostat/%x%x%x/setup/ntc",
-         comminfo->mqtt_prefix, chipid[3],chipid[4],chipid[5]);
     sprintf(jsondata, "{\"dev\":\"%x%x%x\",\"id\":\"ntcreader\",\"interval\":%d,\"samples\":%d}",
                 chipid[3],chipid[4],chipid[5],
                 setup.interval, setup.samples);
-    esp_mqtt_client_publish(client, setupTopic, jsondata , 0, 0, 1);
+    esp_mqtt_client_publish(client, mkSetupTopic("ntc",setupTopic, chipid), jsondata , 0, 0, 1);
     sendcnt++;
 
-    sprintf(setupTopic,"%s/thermostat/%x%x%x/setup/heat",
-         comminfo->mqtt_prefix, chipid[3],chipid[4],chipid[5]);
     sprintf(jsondata, "{\"dev\":\"%x%x%x\",\"id\":\"heatsetup\","
                       "\"pwmlen\":%d,\"target\":%2.2f,"
                       "\"hiboost\":%2.2f,\"lodeduct\":%2.2f}",
                 chipid[3],chipid[4],chipid[5],
                 setup.pwmlen , setup.target, setup.hiboost, setup.lodeduct);
-    esp_mqtt_client_publish(client, setupTopic, jsondata , 0, 0, 1);
+    esp_mqtt_client_publish(client, mkSetupTopic("heat",setupTopic, chipid), jsondata , 0, 0, 1);
     sendcnt++;
 
-    sprintf(setupTopic,"%s/thermostat/%x%x%x/setup/brightness",
-         comminfo->mqtt_prefix, chipid[3],chipid[4],chipid[5]);
     sprintf(jsondata, "{\"dev\":\"%x%x%x\",\"id\":\"brightness\",\"value\":%d}",
                 chipid[3],chipid[4],chipid[5],
                 setup.brightness);
-    esp_mqtt_client_publish(client, setupTopic, jsondata , 0, 0, 1);                
+    esp_mqtt_client_publish(client, mkSetupTopic("brightness",setupTopic, chipid), jsondata , 0, 0, 1);                
+    sendcnt++;
+
+
+    float temperature;
+    int raw;
+
+    raw = ntc_get_calibr_high(&temperature);
+    sprintf(jsondata, "{\"dev\":\"%x%x%x\",\"id\":\"calibratehigh\",\"temperature\":%2.2f,\"raw\":%d}",
+                chipid[3],chipid[4],chipid[5],
+                temperature, raw);
+    esp_mqtt_client_publish(client, mkSetupTopic("calibratehigh",setupTopic, chipid), jsondata , 0, 0, 1);                
+    sendcnt++;
+
+    raw = ntc_get_calibr_low(&temperature);
+    sprintf(jsondata, "{\"dev\":\"%x%x%x\",\"id\":\"calibratelow\",\"temperature\":%2.2f,\"raw\":%d}",
+                chipid[3],chipid[4],chipid[5],
+                temperature, raw);
+    esp_mqtt_client_publish(client, mkSetupTopic("calibratelow",setupTopic, chipid), jsondata , 0, 0, 1);                
     sendcnt++;
 
     gpio_set_level(BLINK_GPIO, false);
@@ -725,7 +746,7 @@ static void wifi_event_handler(void *event_handler_arg, esp_event_base_t event_b
         printf("Wifi got IP\n");
         gpio_set_level(WLANSTATUS_GPIO, true);
         retry_num = 0;
-        //ota_cancel_rollback(); 
+        ota_cancel_rollback(); 
     }
 }
 
@@ -839,7 +860,7 @@ void app_main(void)
         setup.lodeduct     = flash_read_float("lodeduct", setup.lodeduct);
 
         ntc_init(chipid, setup.interval * 1000, setup.samples);
-        ota_init(comminfo->mqtt_prefix, chipid);
+        program_version = ota_init(comminfo->mqtt_prefix, chipid);
         display_brightness(setup.brightness);
         heater_init(setup.pwmlen, HEATER_POWERLEVELS);
         pidcontroller_init(&pidCtl, comminfo->mqtt_prefix, chipid, setup.max, HEATER_POWERLEVELS-1, setup.interval, setup.kp, setup.ki, setup.kd);

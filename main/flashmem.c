@@ -11,7 +11,7 @@ void flash_open(char *name)
     esp_err_t err;
 
     err = nvs_flash_init();
-    printf("<----------- Nvs_flash_init returned %d ------------>\n", err);
+    printf("Nvs_flash_init returned %d\n", err);
 
     printf("Opening Non-Volatile Storage (NVS) handle... ");
     err = nvs_open(name, NVS_READWRITE, &nvsh);
