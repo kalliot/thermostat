@@ -30,6 +30,7 @@ enum {
     CAL_MAX
 };
 
+
 static struct {
     char *rawname;
     char *tempname;
@@ -69,27 +70,53 @@ static void queue_measurement(float tempval)
 }
 
 
-void ntc_set_calibr_low(float temp)
+void ntc_set_calibr_low(float temp, int raw)
 {
-    printf("got calibration low, raw=%d, measured temperature is %f\n", lastRaw, temp);
+    float temperature = temp;
+    int rawvalue = raw;
+    
     if (xSemaphoreTake(mutex, (TickType_t) 1000) == pdTRUE)
     {
-        calibr[CAL_MIN].raw  = lastRaw;
-        calibr[CAL_MIN].temp = temp;
+        if (raw == -1) // get last measured value.
+        {
+            rawvalue  = lastRaw;
+        }
+        printf("got calibration low, raw=%d, measured temperature is %f\n", rawvalue, temp);
+        calibr[CAL_MIN].raw  = rawvalue;
+        calibr[CAL_MIN].temp = temperature;
         xSemaphoreGive(mutex);
     }
 }
 
 
-void ntc_set_calibr_high(float temp)
+void ntc_set_calibr_high(float temp, int raw)
 {
-    printf("got calibration high, raw=%d, measured temperature is %f\n", lastRaw, temp);
+    float temperature = temp;
+    int rawvalue = raw;
+    
     if (xSemaphoreTake(mutex, (TickType_t) 1000) == pdTRUE)
     {
-        calibr[CAL_MAX].raw  = lastRaw;
-        calibr[CAL_MAX].temp = temp;
+        if (raw == -1) // get last measured value.
+        {
+            rawvalue  = lastRaw;
+        }
+        printf("got calibration high, raw=%d, measured temperature is %f\n", rawvalue, temp);
+        calibr[CAL_MAX].raw  = rawvalue;
+        calibr[CAL_MAX].temp = temperature;
         xSemaphoreGive(mutex);
     }
+}
+
+int ntc_get_calibr_low(float *temp)
+{
+    *temp = calibr[CAL_MIN].temp;
+    return calibr[CAL_MIN].raw;
+}
+
+int ntc_get_calibr_high(float *temp)
+{
+    *temp = calibr[CAL_MAX].temp;
+    return calibr[CAL_MAX].raw;
 }
 
 

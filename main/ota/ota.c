@@ -8,6 +8,8 @@
 #include "esp_ota_ops.h"
 #include "esp_http_client.h"
 #include "esp_https_ota.h"
+#include "esp_event.h"
+#include "freertos/event_groups.h"
 #include "nvs.h"
 #include "nvs_flash.h"
 
@@ -20,26 +22,61 @@
 static char topic[64];
 static uint8_t *chipid;
 static bool otaIsActive = false;
+static bool evtHandlerRegistered = false;
 static const char *TAG = "ota_updater";
 static char *otaPath;
+static esp_app_desc_t running_app_info;
+
 
 extern const uint8_t server_cert_pem_start[] asm("_binary_ca_cert_pem_start");
 extern const uint8_t server_cert_pem_end[] asm("_binary_ca_cert_pem_end");
 
 #define OTA_URL_SIZE 256
 
+/* Event handler for catching system events */
+
+
+static void event_handler(void* arg, esp_event_base_t event_base,
+                          int32_t event_id, void* event_data)
+{
+    if (event_base == ESP_HTTPS_OTA_EVENT) {
+        switch (event_id) {
+            case ESP_HTTPS_OTA_START:
+                ESP_LOGI(TAG, "OTA started");
+                break;
+            case ESP_HTTPS_OTA_CONNECTED:
+                ESP_LOGI(TAG, "Connected to server");
+                break;
+            case ESP_HTTPS_OTA_GET_IMG_DESC:
+                ESP_LOGI(TAG, "Reading Image Description");
+                break;
+            case ESP_HTTPS_OTA_VERIFY_CHIP_ID:
+                ESP_LOGI(TAG, "Verifying chip id of new image: %d", *(esp_chip_id_t *)event_data);
+                break;
+            case ESP_HTTPS_OTA_DECRYPT_CB:
+                ESP_LOGI(TAG, "Callback to decrypt function");
+                break;
+            case ESP_HTTPS_OTA_WRITE_FLASH:
+                ESP_LOGD(TAG, "Writing to flash: %d written", *(int *)event_data);
+                break;
+            case ESP_HTTPS_OTA_UPDATE_BOOT_PARTITION:
+                ESP_LOGI(TAG, "Boot partition updated. Next Partition: %d", *(esp_partition_subtype_t *)event_data);
+                break;
+            case ESP_HTTPS_OTA_FINISH:
+                ESP_LOGI(TAG, "OTA finish");
+                break;
+            case ESP_HTTPS_OTA_ABORT:
+                ESP_LOGI(TAG, "OTA abort");
+                break;
+        }
+    }
+}
+
 
 static esp_err_t validate_image_header(esp_app_desc_t *new_app_info)
 {
     if (new_app_info == NULL) {
         return ESP_ERR_INVALID_ARG;
-    }
-
-    const esp_partition_t *running = esp_ota_get_running_partition();
-    esp_app_desc_t running_app_info;
-    if (esp_ota_get_partition_description(running, &running_app_info) == ESP_OK) 
-    {
-        ESP_LOGI(TAG, "Running firmware version: %s", running_app_info.version);
     }
 
     if (memcmp(new_app_info->version, running_app_info.version, sizeof(new_app_info->version)) == 0) {
@@ -78,7 +115,7 @@ static void ota_task(void *pvParameter)
 
     esp_err_t ota_finish_err = ESP_OK;
     esp_http_client_config_t config = {
-        .url = CONFIG_FIRMWARE_UPGRADE_URL,
+        .url = fname,
         .cert_pem = (char *)server_cert_pem_start,
         .timeout_ms = CONFIG_OTA_RECV_TIMEOUT,
         .keep_alive_enable = true,
@@ -98,7 +135,7 @@ static void ota_task(void *pvParameter)
     esp_https_ota_handle_t https_ota_handle = NULL;
     esp_err_t err = esp_https_ota_begin(&ota_config, &https_ota_handle);
     if (err != ESP_OK) {
-        ESP_LOGE(TAG, "ESP HTTPS OTA Begin failed");
+        ESP_LOGE(TAG, "ESP HTTPS OTA Begin failed err=%d", err);
         if (otaPath != NULL) free(otaPath);
         insert_queue(0);
         vTaskDelete(NULL);
@@ -108,17 +145,18 @@ static void ota_task(void *pvParameter)
     err = esp_https_ota_get_img_desc(https_ota_handle, &app_desc);
     if (err != ESP_OK) 
     {
-        ESP_LOGE(TAG, "esp_https_ota_read_img_desc failed");
+        ESP_LOGE(TAG, "esp_https_ota_read_img_desc failed err=%d", err);
         goto ota_end;
     }
     err = validate_image_header(&app_desc);
     if (err != ESP_OK) 
     {
-        ESP_LOGE(TAG, "image header verification failed");
+        ESP_LOGE(TAG, "image header verification failed, err=%d", err);
         goto ota_end;
     }
 
-
+    
+    int lastSendInfoBytes = 0;
     while (1) 
     {
         err = esp_https_ota_perform(https_ota_handle);
@@ -126,9 +164,16 @@ static void ota_task(void *pvParameter)
             break;
         }
         int len = esp_https_ota_get_image_len_read(https_ota_handle);
-        ESP_LOGD(TAG, "Image bytes read: %d", len);
-        insert_queue(bytesReceived);
+        bytesReceived += len;
+        // don't send count from each packet, just after 100kb has been added.
+        if (bytesReceived > lastSendInfoBytes + 100 * 1024) 
+        {
+            insert_queue(bytesReceived);
+            lastSendInfoBytes = bytesReceived;
+        }    
     }
+
+    insert_queue(bytesReceived);
 
     if (esp_https_ota_is_complete_data_received(https_ota_handle) != true) 
     {
@@ -184,10 +229,17 @@ void ota_status_publish(struct measurement *data, esp_mqtt_client_handle_t clien
 }
 
 
-void ota_init(char *prefix, uint8_t *chip)
+char *ota_init(char *prefix, uint8_t *chip)
 {
     chipid = chip;
     sprintf(topic,"%s/thermostat/%x%x%x/otaupdate", prefix, chipid[3], chipid[4], chipid[5]);
+
+    const esp_partition_t *running = esp_ota_get_running_partition();
+    if (esp_ota_get_partition_description(running, &running_app_info) == ESP_OK) 
+    {
+        ESP_LOGI(TAG, "Running firmware version: %s", running_app_info.version);
+    }
+    return running_app_info.version;
 }
 
 
@@ -202,6 +254,11 @@ void ota_start(char *fname)
         otaIsActive = true;
         otaPath = (char *) malloc(OTA_URL_SIZE);
         sprintf(otaPath,"%s/%s", CONFIG_FIRMWARE_UPGRADE_URL, fname);
+        if (!evtHandlerRegistered)
+        {
+            ESP_ERROR_CHECK(esp_event_handler_register(ESP_HTTPS_OTA_EVENT, ESP_EVENT_ANY_ID, &event_handler, NULL));
+            evtHandlerRegistered = true;
+        }    
         xTaskCreate(&ota_task, "ota_task", 1024 * 8, otaPath, 5, NULL);
     }    
     return;

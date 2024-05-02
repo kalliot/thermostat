@@ -132,7 +132,7 @@ static void getFirstTemperatures()
     float temperature;
     int success_cnt = 0;
 
-    for (int k=0; k < 5; k++)
+    for (int k=0; k < 3; k++)
     {
         ds18b20_requestTemperatures();
         for (int i=0; i < tempSensorCnt; ) {
