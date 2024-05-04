@@ -5,6 +5,7 @@
 #include "freertos/task.h"
 #include "esp_adc/adc_oneshot.h"
 #include "freertos/semphr.h"
+#include "esp_log.h"
 #include "driver/gpio.h"
 #include "mqtt_client.h"
 #include "thermostat.h"
@@ -15,6 +16,8 @@ static int currentLevel = 0;
 static int levelCnt = 10;
 static int slotLen = 1000;
 static SemaphoreHandle_t mutex;
+
+static const char *TAG = "heater";
 
 static void activator(void* arg)
 {
@@ -30,7 +33,7 @@ static void activator(void* arg)
         }
         else
         {
-            printf("failed to take mutex\n");
+            ESP_LOGE(TAG,"failed to take mutex");
             vTaskDelay(1000 / portTICK_PERIOD_MS);
             continue;
         }
@@ -71,7 +74,7 @@ void heater_init(int fullRoundSec, int levels)
     mutex = xSemaphoreCreateMutex();
     if (mutex == NULL)
     {
-        printf("%s failed to create mutex",__FILE__);
+        ESP_LOGE(TAG,"failed to create mutex");
         return;
     }
     gpio_reset_pin(HEATER_GPIO);

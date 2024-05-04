@@ -5,6 +5,7 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "freertos/semphr.h"
+#include "esp_log.h"
 #include "esp_adc/adc_oneshot.h"
 #include "driver/gpio.h"
 #include "mqtt_client.h"
@@ -12,7 +13,6 @@
 #include "thermostat.h"
 
 
-#define MEASURES_PER_SAMPLE 10
 
 static adc_oneshot_unit_handle_t adc1_handle;
 static uint8_t *chipid;
@@ -24,6 +24,7 @@ static int lastRaw = 0;
 static float prevTemp = 0.0;
 static SemaphoreHandle_t mutex;
 
+static const char *TAG = "ntcreader";
 
 enum {
     CAL_MIN,
@@ -100,7 +101,7 @@ void ntc_set_calibr_high(float temp, int raw)
         {
             rawvalue  = lastRaw;
         }
-        printf("got calibration high, raw=%d, measured temperature is %f\n", rawvalue, temp);
+        ESP_LOGI(TAG,"got calibration high, raw=%d, measured temperature is %f", rawvalue, temp);
         calibr[CAL_MAX].raw  = rawvalue;
         calibr[CAL_MAX].temp = temperature;
         xSemaphoreGive(mutex);
@@ -122,15 +123,15 @@ int ntc_get_calibr_high(float *temp)
 
 bool ntc_save_calibrations(void)
 {
-    printf("saving calibrations to flash\n");
+    ESP_LOGI(TAG,"saving calibrations to flash");
     if (calibr[CAL_MAX].raw  < calibr[CAL_MIN].raw)
     {
-        printf("Error: calibration maxraw is lower than minraw\n");
+        ESP_LOGE(TAG,"Error: calibration maxraw is lower than minraw");
         return false;
     }
     if (calibr[CAL_MAX].temp  < calibr[CAL_MIN].temp)
     {
-        printf("Error: calibration maxtemp is lower than mintemp\n");
+        ESP_LOGI(TAG,"Error: calibration maxtemp is lower than mintemp");
         return false;
     }
     flash_write(calibr[CAL_MAX].rawname, calibr[CAL_MAX].raw);
@@ -234,7 +235,7 @@ void ntc_init(uint8_t *chip, int intervalMs, int cnt)
     mutex = xSemaphoreCreateMutex();
     if (mutex == NULL)
     {
-        printf("%s failed to create mutex",__FILE__);
+        ESP_LOGE(TAG,"failed to create mutex");
         return;
     }
     samplecnt = cnt;
@@ -255,7 +256,7 @@ void ntc_init(uint8_t *chip, int intervalMs, int cnt)
     adc_oneshot_config_channel(adc1_handle, ADC_CHANNEL_0, &config);
     // mutex is here not needed, we are not yet threading.
     temperature = convert(ntc_read());
-    printf("ntc_init, first temperature read is %f\n", temperature);
+    ESP_LOGI(TAG,"ntc_init, first temperature read is %f", temperature);
     sampleInterval = intervalMs / samplecnt;
     xTaskCreate(ntc_reader, "ntc reader", 2048, NULL, 10, NULL);
     return;

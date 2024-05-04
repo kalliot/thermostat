@@ -3,11 +3,13 @@
 #include <math.h>
 #include "freertos/FreeRTOS.h"
 #include "freertos/queue.h"
+#include "esp_log.h"
 #include "driver/gpio.h"
 #include "mqtt_client.h"
 #include "thermostat.h"
 #include "pidcontroller.h"
 
+static const char *TAG = "pidcontroller";
 
 static void insert_queue(int tune)
 {
@@ -80,9 +82,8 @@ int pidcontroller_tune(PID *p, float measurement)
     elapsed = now - p->prevMeasTs;
 
     if (elapsed >= p->interval && elapsed < 10 * p->interval)   // first round and after system has refreshed network time
-    {                                                          // elapsed is huge, just after ntc time sync, so reject it.
+    {                                                           // elapsed is huge, just after ntc time sync, so reject it.
         correction = ((float) p->interval) / ((float) elapsed);
-        printf("elapsed %d seconds, correction for interval is %.3f\n", elapsed, correction);
         p->integral += p->igain * error * correction;
         if (p->integral > p->maxTune)
             p->integral = p->maxTune;
@@ -92,9 +93,11 @@ int pidcontroller_tune(PID *p, float measurement)
 
     differential = p->dgain * (measurement - p->prevValue);
     float ft = p->pgain * error + p->integral - differential / correction;
-    tuneval = ft + 0.5; // correct rounding from float to int. We have only positive values.
+    tuneval = ft + 0.5; // correct rounding from float to int.
 
-    printf("pc=%.04f, ic=%.4f, dc=%.04f, precise tune is %.2f\n",p->pgain * error, p->integral, differential / correction, ft);
+    ESP_LOGI(TAG,"%d sec, corr=%.3f, pc=%.04f, ic=%.4f, dc=%.04f, tune = %.2f",
+        elapsed, correction,
+        p->pgain * error, p->integral, differential / correction, ft);
 
     if (measurement > p->maxTemp)
     {
@@ -120,7 +123,7 @@ bool pidcontroller_publish(PID *p, struct measurement *data, esp_mqtt_client_han
     time(&now);
     gpio_set_level(BLINK_GPIO, true);
 
-    static char *datafmt = "{\"dev\":\"%x%x%x\",\"id\":\"thermostat\",\"value\":%d,\"ts\":%jd}";
+    static const char *datafmt = "{\"dev\":\"%x%x%x\",\"id\":\"thermostat\",\"value\":%d,\"ts\":%jd}";
     sprintf(jsondata, datafmt,
                 p->chipid[3],p->chipid[4],p->chipid[5],
                 data->data.count,

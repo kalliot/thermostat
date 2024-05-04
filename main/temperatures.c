@@ -12,7 +12,7 @@
 #include "freertos/semphr.h"
 #include "freertos/queue.h"
 
-
+#include "esp_log.h"
 #include "driver/gpio.h"
 #include "ds18b20.h"
 #include "mqtt_client.h"
@@ -21,6 +21,9 @@
 #define MAX_SENSORS 4
 #define SENSOR_NAMELEN 17
 #define NO_CHANGE_INTERVAL 900
+#define DELAY_BETWEEN_SENSORS 2000
+
+static const char *TAG = "temperatures";
 
 static int tempSensorCnt;
 static uint8_t *chipid;
@@ -57,16 +60,16 @@ static int temp_getaddresses(DeviceAddress *tempSensorAddresses) {
     for (int i = 0; i < MAX_SENSORS * 3; i++) // average 3 retries for each sensor.
     {
         gpio_set_level(BLINK_GPIO, true);
-        printf("searching address %d ", numberFound);
+        ESP_LOGI(TAG,"searching address %d ", numberFound);
         if (search(tempSensorAddresses[numberFound], true))
         {
             if (numberFound > 0 && isDuplicate(tempSensorAddresses[numberFound], numberFound))
             {
-                printf("duplicate address, rejecting\n");
+                ESP_LOGI(TAG,"duplicate address, rejecting.");
             }
             else
             {
-                printf("found\n");
+                ESP_LOGI(TAG,"found");
                 numberFound++;
             }
         }
@@ -77,7 +80,6 @@ static int temp_getaddresses(DeviceAddress *tempSensorAddresses) {
         }
         vTaskDelay(100 / portTICK_PERIOD_MS);
     }
-    printf("\n");
     return numberFound;
 }
 
@@ -111,7 +113,7 @@ bool temperature_send(char *prefix, struct measurement *data, esp_mqtt_client_ha
     time(&now);
     gpio_set_level(BLINK_GPIO, true);
 
-    static char *datafmt = "{\"dev\":\"%x%x%x\",\"sensor\":\"%s\",\"id\":\"temperature\",\"value\":%.02f,\"ts\":%jd,\"unit\":\"C\"}";
+    static const char *datafmt = "{\"dev\":\"%x%x%x\",\"sensor\":\"%s\",\"id\":\"temperature\",\"value\":%.02f,\"ts\":%jd,\"unit\":\"C\"}";
     sprintf(temperatureTopic,"%s/thermostat/%x%x%x/parameters/temperature/%s", prefix, chipid[3], chipid[4], chipid[5], sensors[data->gpio].sensorname);
 
     sprintf(jsondata, datafmt,
@@ -125,7 +127,6 @@ bool temperature_send(char *prefix, struct measurement *data, esp_mqtt_client_ha
     return true;
 }
 
-#define DELAY_BETWEEN_SENSORS 2000
 
 static void getFirstTemperatures()
 {
@@ -140,7 +141,7 @@ static void getFirstTemperatures()
             vTaskDelay(1000 / portTICK_PERIOD_MS);
             temperature = ds18b20_getTempC((DeviceAddress *) sensors[i].addr) + 1.0;
             if (temperature < -10.0 || temperature > 85.0) {
-                printf("%s failed with initial value %f, reading again\n", sensors[i].sensorname, temperature);
+                ESP_LOGI(TAG,"%s failed with initial value %f, reading again", sensors[i].sensorname, temperature);
             }
             else {
                 sensors[i].prev = temperature;
@@ -166,13 +167,11 @@ static void temp_reader(void* arg)
 
     for(;;) {
         time(&now);
-        //printf("reading temperatures, temp sensor count=%d, delay between reads=%d\n", tempSensorCnt, delay);
         ds18b20_requestTemperatures();
         for (int i=0; i < tempSensorCnt; i++) {
             vTaskDelay(DELAY_BETWEEN_SENSORS / portTICK_PERIOD_MS); 
             temperature = ds18b20_getTempC((DeviceAddress *) sensors[i].addr);
             float diff = fabs(sensors[i].prev - temperature);
-            //printf("temperature in sensor index %d, name %s is %f\n", i, sensors[i].sensorname, temperature);
             if (temperature < -10.0 || temperature > 85.0 || diff > 20.0)
             {
                 sensorerrors++;
@@ -180,7 +179,6 @@ static void temp_reader(void* arg)
             else
             {
                 int age = now - sensors[i].prevsend;
-                //printf("Measurement in sensor %d age is %d seconds\n", i, age);
                 if ((diff) >= 0.2 || (age > NO_CHANGE_INTERVAL))
                 {
                     struct measurement meas;
@@ -208,10 +206,10 @@ bool temperatures_init(int gpio, uint8_t *chip)
 
     sensors = malloc(sizeof(struct oneWireSensor) * tempSensorCnt);
     if (sensors == NULL) {
-        printf("malloc failed when allocating sensors\n");
+        ESP_LOGE(TAG,"malloc failed when allocating sensors");
         return false;
     }
-    printf("\nfound %d temperature sensors\n", tempSensorCnt);
+    ESP_LOGI(TAG,"found %d temperature sensors", tempSensorCnt);
     for (int i=0;i<tempSensorCnt;i++) {
         sensors[i].addr = &tempSensors[i]; 
         sensors[i].prev = 0.0;
@@ -221,7 +219,7 @@ bool temperatures_init(int gpio, uint8_t *chip)
             sprintf(buff,"%x",tempSensors[i][j]);
             strcat(sensors[i].sensorname, buff);
         }
-        printf("sensorname %s done\n", sensors[i].sensorname);
+        ESP_LOGI(TAG,"sensorname %s done\n", sensors[i].sensorname);
     }
     getFirstTemperatures();
     if (tempSensorCnt)

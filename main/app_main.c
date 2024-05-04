@@ -159,9 +159,9 @@ static char *getJsonStr(cJSON *js, char *name)
         {
             return item->valuestring;
         }
-        else printf("%s is not a string", name);
+        else ESP_LOGI(TAG, "%s is not a string", name);
     }
-    else printf("%s not found from json\n", name);
+    else ESP_LOGI(TAG,"%s not found from json", name);
     return "\0";
 }
 
@@ -180,11 +180,11 @@ static bool getJsonInt(cJSON *js, char *name, int *val)
                 ret = true;
                 *val = item->valueint;
             }
-            else printf("%s is not changed\n", name);
+            else ESP_LOGI(TAG,"%s is not changed", name);
         }
-        else printf("%s is not a number", name);
+        else ESP_LOGI(TAG,"%s is not a number", name);
     }
-    else printf("%s not found from json\n", name);
+    else ESP_LOGI(TAG,"%s not found from json", name);
     return ret;
 }
 
@@ -202,13 +202,13 @@ static bool getJsonFloat(cJSON *js, char *name, float *val)
             {
                 ret = true;
                 *val = item->valuedouble;
-                printf("received variable %s:%2.2f\n", name, item->valuedouble);
+                ESP_LOGI(TAG,"received variable %s:%2.2f", name, item->valuedouble);
             }
-            else printf("%s is not changed\n", name);
+            ESP_LOGI(TAG,"%s is not changed", name);
         }
-        else printf("%s is not a number\n", name);
+        else ESP_LOGI(TAG,"%s is not a number", name);
     }
-    else printf("%s not found from json\n", name);
+    else ESP_LOGI(TAG,"%s not found from json", name);
     return ret;
 }
 
@@ -340,7 +340,7 @@ static bool handleJson(esp_mqtt_event_handle_t event)
 
         if (!strcmp(id,"pidsetup"))
         {
-            printf("got pid setup\n");
+            ESP_LOGI(TAG,"got pid setup");
             readPidSetupJson(root);
             ret = true;
         }
@@ -364,7 +364,7 @@ static bool handleJson(esp_mqtt_event_handle_t event)
             {
                 int raw = -1;
                 getJsonInt(root,"raw", &raw);
-                printf("got calibration low %f, raw %d\n", deflow, raw);
+                ESP_LOGI(TAG,"got calibration low %f, raw %d", deflow, raw);
                 ntc_set_calibr_low(deflow, raw);
             }
         }
@@ -375,7 +375,7 @@ static bool handleJson(esp_mqtt_event_handle_t event)
             {
                 int raw = -1;
                 getJsonInt(root,"raw", &raw);
-                printf("got calibration high %f, raw %d\n", defhigh, raw);
+                ESP_LOGI(TAG,"got calibration high %f, raw %d", defhigh, raw);
                 ntc_set_calibr_high(defhigh, raw);
             }
         }
@@ -387,7 +387,7 @@ static bool handleJson(esp_mqtt_event_handle_t event)
         {
             if (getJsonInt(root, "value", &setup.brightness))
             {
-                printf("got display brightness %f\n", setup.brightness);
+                ESP_LOGI(TAG,"got display brightness %f", setup.brightness);
                 flash_write("brightness", setup.brightness);
                 display_brightness(setup.brightness);
             }
@@ -434,22 +434,22 @@ static bool handleJson(esp_mqtt_event_handle_t event)
                 char *daystr = getJsonStr(root,"day");
                 if (isInArray(daystr, hitemp, hitempcnt))
                 {
-                    printf("HITEMP IS ON!\n");
+                    ESP_LOGI(TAG,"HITEMP IS ON!");
                     newInfluence = setup.hiboost;
                 }
                 else if (isInArray(daystr, lotemp, lotempcnt))
                 {
-                    printf("LOTEMP IS ON!\n");
+                    ESP_LOGI(TAG,"LOTEMP IS ON!");
                     newInfluence = -1.0 * setup.lodeduct;
                 }
                 else
                 {
-                    printf("normal temperature is on\n");
+                    ESP_LOGI(TAG,"normal temperature is on");
                 }
                 if (newInfluence != elpriceInfluence)
                 {
                     elpriceInfluence = newInfluence;
-                    printf("changing target to %f\n", setup.target + elpriceInfluence);
+                    ESP_LOGI(TAG,"changing target to %f", setup.target + elpriceInfluence);
                     pidcontroller_target(&pidCtl, setup.target + elpriceInfluence);
                 }
             }
@@ -497,7 +497,7 @@ static void mqtt_event_handler(void *handler_args, esp_event_base_t base, int32_
     case MQTT_EVENT_CONNECTED:
             ESP_LOGI(TAG, "MQTT_EVENT_CONNECTED");
             isConnected = true;
-            printf("subscribing topics\n");
+            ESP_LOGI(TAG,"subscribing topics");
 
             msg_id = esp_mqtt_client_subscribe(client, setupTopic , 0);
             ESP_LOGI(TAG, "sent subscribe %s succesful, msg_id=%d", setupTopic, msg_id);
@@ -598,7 +598,7 @@ static void sendStatistics(esp_mqtt_client_handle_t client, uint8_t *chipid, tim
     if (now < MIN_EPOCH || started < MIN_EPOCH) return;
     gpio_set_level(BLINK_GPIO, true);
 
-    static char *datafmt = "{\"dev\":\"%x%x%x\",\"id\":\"statistics\",\"connectcnt\":%d,\"disconnectcnt\":%d,\"sendcnt\":%d,\"sensorerrors\":%d, \"max_queued\":%d,\"ts\":%jd,\"started\":%jd,\"rssi\":%d}";
+    static const char *datafmt = "{\"dev\":\"%x%x%x\",\"id\":\"statistics\",\"connectcnt\":%d,\"disconnectcnt\":%d,\"sendcnt\":%d,\"sensorerrors\":%d, \"max_queued\":%d,\"ts\":%jd,\"started\":%jd,\"rssi\":%d}";
     
     sprintf(jsondata, datafmt, 
                 chipid[3],chipid[4],chipid[5],
@@ -631,7 +631,7 @@ static void sendInfo(esp_mqtt_client_handle_t client, uint8_t *chipid)
                 temperatures_info());
     esp_mqtt_client_publish(client, infoTopic, jsondata , 0, 0, 1);
     sendcnt++;
-    printf("sending info\n");
+    ESP_LOGI(TAG,"sending info");
     gpio_set_level(BLINK_GPIO, false);
 }
 
@@ -708,7 +708,7 @@ static esp_mqtt_client_handle_t mqtt_app_start(uint8_t *chipid)
         comminfo->mqtt_prefix ,chipid[3],chipid[4],chipid[5]);
     sprintf(uri,"mqtt://%s:%s",comminfo->mqtt_server, comminfo->mqtt_port);
 
-    printf("built client id=[%s]",client_id);
+    ESP_LOGI(TAG,"built client id=[%s]",client_id);
     esp_mqtt_client_config_t mqtt_cfg = {
         .broker.address.uri = uri,
         .credentials.client_id = client_id
@@ -725,25 +725,25 @@ static void wifi_event_handler(void *event_handler_arg, esp_event_base_t event_b
 {
     if(event_id == WIFI_EVENT_STA_START)
     {
-        printf("WIFI CONNECTING....\n");
+        ESP_LOGI(TAG,"WIFI CONNECTING");
     }
     else if (event_id == WIFI_EVENT_STA_CONNECTED)
     {
-        printf("WiFi CONNECTED\n");
+        ESP_LOGI(TAG,"WiFi CONNECTED");
     }
     else if (event_id == WIFI_EVENT_STA_DISCONNECTED)
     {
-        printf("WiFi lost connection\n");
+        ESP_LOGI(TAG,"WiFi lost connection");
         gpio_set_level(WLANSTATUS_GPIO, false);
         if(retry_num < WIFI_RECONNECT_RETRYCNT){
             esp_wifi_connect();
             retry_num++;
-            printf("Retrying to Connect...\n");
+            ESP_LOGI(TAG,"Retrying to Connect...");
         }
     }
     else if (event_id == IP_EVENT_STA_GOT_IP)
     {
-        printf("Wifi got IP\n");
+        ESP_LOGI(TAG,"Wifi got IP");
         gpio_set_level(WLANSTATUS_GPIO, true);
         retry_num = 0;
         ota_cancel_rollback(); 
@@ -871,7 +871,7 @@ void app_main(void)
 
         sprintf(statisticsTopic,"%s/thermostat/%x%x%x/statistics",
             comminfo->mqtt_prefix, chipid[3],chipid[4],chipid[5]);
-        printf("statisticsTopic=[%s]\n", statisticsTopic);
+        ESP_LOGI(TAG,"statisticsTopic=[%s]", statisticsTopic);
 
         sprintf(setupTopic,"%s/thermostat/%x%x%x/setsetup",
             comminfo->mqtt_prefix, chipid[3],chipid[4],chipid[5]);
@@ -884,7 +884,7 @@ void app_main(void)
         // It takes some time to get correct timestamp from ntp.
         time(&started);
         prevStatsTs = now = started;
-        printf("gpios: mqtt=%d wlan=%d\n",MQTTSTATUS_GPIO,WLANSTATUS_GPIO);
+        ESP_LOGI(TAG,"gpios: mqtt=%d wlan=%d", MQTTSTATUS_GPIO, WLANSTATUS_GPIO);
         if (isConnected) sendStatistics(client, chipid, now); // if not connected yet, this will stay in evt_queue.
 
         float ntc = 0.0;
@@ -892,8 +892,6 @@ void app_main(void)
 
         float sample = ntc_get_temperature();
         tune = pidcontroller_tune(&pidCtl, sample);
-
-        printf("--> tune=%d\n", tune);
         heater_setlevel(tune);
 
         while (1)
@@ -928,7 +926,7 @@ void app_main(void)
                         tune = pidcontroller_tune(&pidCtl, ntc);
                         heater_setlevel(tune);
                         pidcontroller_send_tune(&pidCtl, tune, false);
-                        printf("--> tune=%d\n", tune);
+                        ESP_LOGI(TAG,"--> tune=%d", tune);
                     break;
 
                     case TEMPERATURE:
@@ -946,12 +944,12 @@ void app_main(void)
                         break;
 
                     default:
-                        printf("unknown data type\n" );
+                        ESP_LOGI(TAG,"unknown data type" );
                 }
             }
             else
             { 
-                printf("timeout\n");
+                ESP_LOGI(TAG,"timeout");
                 ntc_sendcurrent();
             }
         }

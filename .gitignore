@@ -1,6 +1,5 @@
 build/
 main/build/
-sdkconfig
 sdkconfig.old
 server_certs
 test_certs

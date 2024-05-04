@@ -1,8 +1,9 @@
 #include <stdio.h>
 #include "nvs_flash.h"
+#include "esp_log.h"
 #include "flashmem.h"
 
-
+static const char *TAG = "flashmem";
 static nvs_handle nvsh;
 
 
@@ -11,14 +12,14 @@ void flash_open(char *name)
     esp_err_t err;
 
     err = nvs_flash_init();
-    printf("Nvs_flash_init returned %d\n", err);
+    if (err) ESP_LOGE(TAG,"Nvs_flash_init returned %d\n", err);
 
-    printf("Opening Non-Volatile Storage (NVS) handle... ");
+    ESP_LOGI(TAG,"Opening Non-Volatile Storage (NVS) handle... ");
     err = nvs_open(name, NVS_READWRITE, &nvsh);
     if (err != ESP_OK) {
-        printf("Error (%d) opening NVS handle!\n", err);
+        ESP_LOGE(TAG,"Error (%d) opening NVS handle!\n", err);
     } else {
-        printf("Done\n");
+        ESP_LOGI(TAG,"Done\n");
     }    
 }
 
@@ -26,9 +27,8 @@ void flash_erase_all(void)
 {
     esp_err_t err;
 
-    printf("Erasing flash partition...");
     err = nvs_erase_all(nvsh);
-    printf((err != ESP_OK) ? "Failed!\n" : "Done\n");
+    ESP_LOGI(TAG,"Erasing flash partition %s",(err != ESP_OK) ? "Failed!\n" : "Done\n");
 }
 
 char *flash_read_str(char *name, char *def, int len)
@@ -37,23 +37,23 @@ char *flash_read_str(char *name, char *def, int len)
     unsigned int readlen = len;
     char *ret;
 
-    printf("Reading %s from NVS ... ", name);
+    ESP_LOGI(TAG,"Reading %s from NVS ... ", name);
     ret = (char *) malloc(len);
     err = nvs_get_str(nvsh, name , ret, &readlen);
     switch (err) {
         case ESP_OK:
-            printf("Done\n");
-            printf("%s = %s\n", name, ret);
+            ESP_LOGI(TAG,"Done");
+            ESP_LOGI(TAG,"%s = %s", name, ret);
         break;
 
         case ESP_ERR_NVS_NOT_FOUND:
-            printf("%s is not initialized yet!\n");
+            ESP_LOGI(TAG,"%s is not initialized yet!");
             free(ret);
             ret = def;
         break;
 
         default :
-            printf("Error (%d) reading!\n", err);
+            ESP_LOGI(TAG,"Error (%d) reading!", err);
             free(ret);
             ret = def;
     }
@@ -64,9 +64,8 @@ void flash_write_str(char *name, char *value)
 {
     esp_err_t err;
 
-    printf("Updating %s in NVS ... ", name);
     err = nvs_set_str(nvsh, name, value);
-    printf((err != ESP_OK) ? "Failed!\n" : "Done\n");
+    ESP_LOGI(TAG,"Updating %s in NVS %s ", name, (err != ESP_OK) ? "Failed!" : "Done");
 }
 
 
@@ -75,21 +74,20 @@ uint16_t flash_read(char *name, uint16_t def)
     esp_err_t err;
     uint16_t ret;
 
-    printf("Reading %s from NVS ... ", name);
+    ESP_LOGI(TAG,"Reading %s from NVS ", name);
     err = nvs_get_u16(nvsh, name , &ret);
     switch (err) {
         case ESP_OK:
-            printf("Done\n");
-            printf("%s = %d\n", name, ret);
+            ESP_LOGI(TAG,"Done, %s = %d", name, ret);
         break;
 
         case ESP_ERR_NVS_NOT_FOUND:
-            printf("%s is not initialized yet!\n");
+            ESP_LOGI(TAG,"%s is not initialized yet!", name);
             ret = def;
         break;
 
         default :
-            printf("Error (%d) reading!\n", err);
+            ESP_LOGI(TAG,"Error (%d) reading!", err);
             ret = def;
     }
     return ret;
@@ -99,9 +97,8 @@ void flash_write(char *name, uint16_t value)
 {
     esp_err_t err;
 
-    printf("Updating %s in NVS ... ", name);
     err = nvs_set_u16(nvsh, name, value);
-    printf((err != ESP_OK) ? "Failed!\n" : "Done\n");
+    ESP_LOGI(TAG, "Updating %s in NVS %s", name, (err != ESP_OK) ? "Failed!" : "Done");
 }
 
 
@@ -111,22 +108,20 @@ float flash_read_float(char *name, float def)
     float ret;
     uint32_t readval;
 
-    printf("Reading %s from NVS ... ", name);
     err = nvs_get_u32(nvsh, name , &readval);
     switch (err) {
         case ESP_OK:
-            printf("Done, ");
-            printf("%s = %d\n", name, readval);
+            ESP_LOGI(TAG, "reading %s from flash, value = %d", name, readval);
             ret = (float) readval / 100.0;
         break;
 
         case ESP_ERR_NVS_NOT_FOUND:
-            printf("%s is not initialized yet!\n");
+            ESP_LOGI(TAG, "%s is not initialized yet!", name);
             ret = def;
         break;
 
         default :
-            printf("Error (%d) reading!\n", err);
+            ESP_LOGI(TAG, "Error (%d) when reading %s!", err, name);
             ret = def;
     }
     return ret;
@@ -139,16 +134,15 @@ void flash_write_float(char *name, float value)
     uint32_t writevalue;
 
     writevalue = value * 100;
-    printf("Updating %s in NVS value = %d... ", name, writevalue);
+    ESP_LOGI(TAG,"Updating %s in NVS value = %d ", name, writevalue);
     err = nvs_set_u32(nvsh, name, writevalue);
-    printf((err != ESP_OK) ? "Failed!\n" : "Done\n");
+    ESP_LOGI(TAG,"%s", (err != ESP_OK) ? "Failed!" : "Done");
 }
 
 void flash_commitchanges(void)
 {
     esp_err_t err;
 
-    printf("NVS commit...");
     err = nvs_commit(nvsh);
-    printf((err != ESP_OK) ? "Failed!\n" : "Done\n");
+    ESP_LOGI(TAG,"NVS commit %s",(err != ESP_OK) ? "Failed!" : "Done");
 }
