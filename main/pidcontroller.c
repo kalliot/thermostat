@@ -6,7 +6,7 @@
 #include "esp_log.h"
 #include "driver/gpio.h"
 #include "mqtt_client.h"
-#include "thermostat.h"
+#include "homeapp.h"
 #include "pidcontroller.h"
 
 static const char *TAG = "pidcontroller";

@@ -28,8 +28,9 @@ void flash_erase_all(void)
     esp_err_t err;
 
     err = nvs_erase_all(nvsh);
-    ESP_LOGI(TAG,"Erasing flash partition %s",(err != ESP_OK) ? "Failed!\n" : "Done\n");
+    if (err != ESP_OK) ESP_LOGD(TAG,"flash erase failed");
 }
+
 
 char *flash_read_str(char *name, char *def, int len)
 {

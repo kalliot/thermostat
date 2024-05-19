@@ -29,7 +29,7 @@
 #include "lwip/netdb.h"
 
 #include "esp_log.h"
-#include "thermostat.h"
+#include "homeapp.h"
 #include "temperatures.h"
 #include "flashmem.h"
 #include "display.h"
@@ -513,6 +513,7 @@ static void mqtt_event_handler(void *handler_args, esp_event_base_t base, int32_
             sendSetup(client, (uint8_t *) handler_args);
             ntc_sendcurrent();
             pidcontroller_send_last(&pidCtl);
+            isConnected = true;
             connectcnt++;
         break;
 
@@ -860,7 +861,7 @@ void app_main(void)
         setup.lodeduct     = flash_read_float("lodeduct", setup.lodeduct);
 
         ntc_init(chipid, setup.interval * 1000, setup.samples);
-        program_version = ota_init(comminfo->mqtt_prefix, chipid);
+        program_version = ota_init(comminfo->mqtt_prefix, "thermostat", chipid);
         display_brightness(setup.brightness);
         heater_init(setup.pwmlen, HEATER_POWERLEVELS);
         pidcontroller_init(&pidCtl, comminfo->mqtt_prefix, chipid, setup.max, HEATER_POWERLEVELS-1, setup.interval, setup.kp, setup.ki, setup.kd);
@@ -941,7 +942,7 @@ void app_main(void)
 
                     case OTA:
                         ota_status_publish(&meas, client);
-                        break;
+                    break;
 
                     default:
                         ESP_LOGI(TAG,"unknown data type" );

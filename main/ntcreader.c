@@ -10,7 +10,7 @@
 #include "driver/gpio.h"
 #include "mqtt_client.h"
 #include "flashmem.h"
-#include "thermostat.h"
+#include "homeapp.h"
 
 
 

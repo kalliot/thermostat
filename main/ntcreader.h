@@ -1,7 +1,7 @@
 #ifndef __NTCREADER__
 #define __NTCREADER__
 
-#include "thermostat.h"
+#include "homeapp.h"
 #include "mqtt_client.h"
 
 

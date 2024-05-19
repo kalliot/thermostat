@@ -8,7 +8,7 @@
 #include "esp_log.h"
 #include "driver/gpio.h"
 #include "mqtt_client.h"
-#include "thermostat.h"
+#include "homeapp.h"
 
 
 

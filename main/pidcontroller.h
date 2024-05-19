@@ -1,7 +1,7 @@
 #ifndef __PIDCONTROLLER__
 #define __PIDCONTROLLER__
 
-#include "thermostat.h"
+#include "homeapp.h"
 #include "mqtt_client.h"
 
 
