@@ -212,9 +212,16 @@ static void ntc_reader(void* arg)
 bool ntc_send(char *prefix, struct measurement *data, esp_mqtt_client_handle_t client)
 {
     time_t now;
-    
+    int retain = 1;
+
     time(&now);
     gpio_set_level(BLINK_GPIO, true);
+
+    if (now < MIN_EPOCH)
+    {
+        now = 0;
+        retain = 0;
+    }
 
     static char *datafmt = "{\"dev\":\"%x%x%x\",\"sensor\":\"ntc\",\"id\":\"temperature\",\"value\":%.02f,\"ts\":%jd,\"unit\":\"C\"}";
     sprintf(temperatureTopic,"%s/thermostat/%x%x%x/parameters/temperature/ntc", prefix, chipid[3], chipid[4], chipid[5]);
@@ -223,20 +230,20 @@ bool ntc_send(char *prefix, struct measurement *data, esp_mqtt_client_handle_t c
                 chipid[3],chipid[4],chipid[5],
                 data->data.temperature,
                 now);
-    esp_mqtt_client_publish(client, temperatureTopic, jsondata , 0, 0, 1);
+    esp_mqtt_client_publish(client, temperatureTopic, jsondata , 0, 0, retain);
     sendcnt++;
     gpio_set_level(BLINK_GPIO, false);
     return true;
 }
 
 
-void ntc_init(uint8_t *chip, int intervalMs, int cnt)
+bool ntc_init(uint8_t *chip, int intervalMs, int cnt)
 {
     mutex = xSemaphoreCreateMutex();
     if (mutex == NULL)
     {
         ESP_LOGE(TAG,"failed to create mutex");
-        return;
+        return false;
     }
     samplecnt = cnt;
     calibr[CAL_MIN].raw   = flash_read(calibr[CAL_MIN].rawname,  calibr[CAL_MIN].raw);
@@ -259,7 +266,7 @@ void ntc_init(uint8_t *chip, int intervalMs, int cnt)
     ESP_LOGI(TAG,"ntc_init, first temperature read is %f", temperature);
     sampleInterval = intervalMs / samplecnt;
     xTaskCreate(ntc_reader, "ntc reader", 2048, NULL, 10, NULL);
-    return;
+    return true;
 }
 
 void ntc_close(void)

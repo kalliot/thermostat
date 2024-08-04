@@ -30,7 +30,7 @@
 
 #include "esp_log.h"
 #include "homeapp.h"
-#include "temperatures.h"
+#include "temperature/temperatures.h"
 #include "flashmem.h"
 #include "display.h"
 #include "ntcreader.h"
@@ -145,6 +145,8 @@ static uint16_t maxQElements = 0;
 static int retry_num = 0;
 static float elpriceInfluence = 0.0;
 static char *program_version = ""; 
+static const char *appname = "thermostat";
+
 static void sendStatistics(esp_mqtt_client_handle_t client, uint8_t *chipid, time_t now);
 static void sendSetup(esp_mqtt_client_handle_t client, uint8_t *chipid);
 static void sendInfo(esp_mqtt_client_handle_t client, uint8_t *chipid);
@@ -314,7 +316,75 @@ static void readPidSetupJson(cJSON *root)
     flash_commitchanges();
 }
 
+static void sensorFriendlyName(cJSON *root)
+{
+    char *sensorname;
+    char *friendlyname;
 
+    sensorname   = getJsonStr(root, "sensor");
+    friendlyname = getJsonStr(root, "name");
+    if (temperature_set_friendlyname(sensorname, friendlyname))
+    {
+        ESP_LOGD(TAG, "writing sensor %s, friendlyname %s to flash",sensorname, friendlyname);
+        flash_write_str(sensorname,friendlyname);
+        flash_commitchanges();
+    }
+}
+
+
+bool sendTargetInfo(esp_mqtt_client_handle_t client, uint8_t *chipid, float target, time_t now)
+{
+    gpio_set_level(BLINK_GPIO, true);
+    char targetTopic[60];
+    int retain=1;
+    static char *datafmt = "{\"dev\":\"%x%x%x\",\"id\":\"targettemp\",\"value\":%.02f,\"ts\":%jd,\"unit\":\"C\"}";
+
+    sprintf(targetTopic,"%s/%s/%x%x%x/parameters/targettemp", comminfo->mqtt_prefix, appname, chipid[3], chipid[4], chipid[5]);
+
+    if (now < MIN_EPOCH)
+    {
+        retain = 0;
+        now = 0;
+    }
+    sprintf(jsondata, datafmt,
+                chipid[3],chipid[4],chipid[5],
+                target,
+                now);
+    esp_mqtt_client_publish(client, targetTopic, jsondata , 0, 0, retain);
+    sendcnt++;
+    gpio_set_level(BLINK_GPIO, false);
+    return true;
+}
+
+bool checkPriceInfluence(cJSON *root)
+{
+    float newInfluence = 0.0;
+    char *daystr = getJsonStr(root,"day");
+    bool ret = false;
+
+    if (isInArray(daystr, hitemp, hitempcnt))
+    {
+        ESP_LOGI(TAG,"HITEMP IS ON!");
+        newInfluence = setup.hiboost;
+    }
+    else if (isInArray(daystr, lotemp, lotempcnt))
+    {
+        ESP_LOGI(TAG,"LOTEMP IS ON!");
+        newInfluence = -1.0 * setup.lodeduct;
+    }
+    else
+    {
+        ESP_LOGI(TAG,"normal temperature is on");
+    }
+    if (newInfluence != elpriceInfluence)
+    {
+        elpriceInfluence = newInfluence;
+        ESP_LOGI(TAG,"changing target to %f", setup.target + elpriceInfluence);
+        pidcontroller_target(&pidCtl, setup.target + elpriceInfluence);
+        ret = true;
+    }
+    return ret;
+}
 
 
 /*
@@ -328,12 +398,15 @@ static void readPidSetupJson(cJSON *root)
 {"dev":"5bdddc","id":"heatsetup","pwmlen":15,"target":32,"hiboost":1,"lodeduct":1}  stock price influence to target temperature
 */
 
-static bool handleJson(esp_mqtt_event_handle_t event)
+static bool handleJson(esp_mqtt_event_handle_t event, uint8_t *chipid)
 {
     cJSON *root = cJSON_Parse(event->data);
     bool ret = false;
     char id[20];
+    time_t now;
 
+    time(&now);
+    ESP_LOGI(TAG,"got something from json");
     if (root != NULL)
     {
         strcpy(id,getJsonStr(root,"id"));
@@ -385,23 +458,29 @@ static bool handleJson(esp_mqtt_event_handle_t event)
         }
         else if (!strcmp(id,"brightness"))
         {
+            int prevBrightness = setup.brightness;
             if (getJsonInt(root, "value", &setup.brightness))
             {
                 ESP_LOGI(TAG,"got display brightness %f", setup.brightness);
                 flash_write("brightness", setup.brightness);
                 display_brightness(setup.brightness);
+                if (prevBrightness == 0) temperature_sendall(); // refresh display
+                ret = true;
             }
         }
         else if (!strcmp(id,"awhightemp"))
         {
             hitemp = jsonToHiLoTable(root,"values", &hitempcnt, hitemp);
+            ret = true;
         }
         else if (!strcmp(id,"awlowtemp"))
         {
             lotemp = jsonToHiLoTable(root,"values", &lotempcnt, lotemp);
+            ret = true;
         }
         else if (!strcmp(id,"heatsetup"))
         {
+            ESP_LOGI(TAG,"got heatsetup");
             if (getJsonInt(root,"pwmlen", &setup.pwmlen))
             {
                 heater_reconfig(setup.pwmlen, HEATER_POWERLEVELS);
@@ -423,35 +502,21 @@ static bool handleJson(esp_mqtt_event_handle_t event)
             {
                 flash_write_float("lodeduct", setup.lodeduct);
             }
+            ret = true;
         }
+        else if (!strcmp(id,"sensorfriendlyname"))
+        {
+            sensorFriendlyName(root);
+        }
+
         // hour has changed
         else if (!strcmp(id,"elprice"))
         {
             char *topicpostfix = &event->topic[event->topic_len - 7];
             if (!memcmp(topicpostfix,"current",7))
             {
-                float newInfluence = 0.0;
-                char *daystr = getJsonStr(root,"day");
-                if (isInArray(daystr, hitemp, hitempcnt))
-                {
-                    ESP_LOGI(TAG,"HITEMP IS ON!");
-                    newInfluence = setup.hiboost;
-                }
-                else if (isInArray(daystr, lotemp, lotempcnt))
-                {
-                    ESP_LOGI(TAG,"LOTEMP IS ON!");
-                    newInfluence = -1.0 * setup.lodeduct;
-                }
-                else
-                {
-                    ESP_LOGI(TAG,"normal temperature is on");
-                }
-                if (newInfluence != elpriceInfluence)
-                {
-                    elpriceInfluence = newInfluence;
-                    ESP_LOGI(TAG,"changing target to %f", setup.target + elpriceInfluence);
-                    pidcontroller_target(&pidCtl, setup.target + elpriceInfluence);
-                }
+                checkPriceInfluence(root);
+                sendTargetInfo(event->client, chipid, setup.target + elpriceInfluence, now);
             }
         }
         else if (!strcmp(id,"otaupdate"))
@@ -536,7 +601,7 @@ static void mqtt_event_handler(void *handler_args, esp_event_base_t base, int32_
         break;
 
     case MQTT_EVENT_DATA:
-        if (handleJson(event)) sendSetup(client, (uint8_t *) handler_args);
+        if (handleJson(event, (uint8_t *) handler_args)) sendSetup(client, (uint8_t *) handler_args);
         break;
 
     case MQTT_EVENT_ERROR:
@@ -555,10 +620,6 @@ static void mqtt_event_handler(void *handler_args, esp_event_base_t base, int32_
     }
 }
 
-/*  sntp_callback()
-**  My influx saver does not want to save records which have bad time.
-**  So, it's better to send them again, when correct time has been set.
-*/
 void sntp_callback(struct timeval *tv)
 {
     (void) tv;
@@ -566,7 +627,6 @@ void sntp_callback(struct timeval *tv)
 
     if (!firstSyncDone)
     {
-        ntc_sendcurrent();
         pidcontroller_send_last(&pidCtl);
         firstSyncDone = true;
     }
@@ -622,14 +682,13 @@ static void sendInfo(esp_mqtt_client_handle_t client, uint8_t *chipid)
 
     char infoTopic[42];
 
-    sprintf(infoTopic,"%s/thermostat/%x%x%x/info",
-         comminfo->mqtt_prefix, chipid[3],chipid[4],chipid[5]);
-    sprintf(jsondata, "{\"dev\":\"%x%x%x\",\"id\":\"info\",\"memfree\":%d,\"idfversion\":\"%s\",\"progversion\":\"%s\", \"tempsensors\":[%s]}",
+    sprintf(infoTopic,"%s/%s/%x%x%x/info",
+         comminfo->mqtt_prefix, appname, chipid[3],chipid[4],chipid[5]);
+    sprintf(jsondata, "{\"dev\":\"%x%x%x\",\"id\":\"info\",\"memfree\":%d,\"idfversion\":\"%s\",\"progversion\":\"%s\"}",
                 chipid[3],chipid[4],chipid[5],
                 esp_get_free_heap_size(),
                 esp_get_idf_version(),
-                program_version,
-                temperatures_info());
+                program_version);
     esp_mqtt_client_publish(client, infoTopic, jsondata , 0, 0, 1);
     sendcnt++;
     ESP_LOGI(TAG,"sending info");
@@ -638,20 +697,20 @@ static void sendInfo(esp_mqtt_client_handle_t client, uint8_t *chipid)
 
 static char *mkSetupTopic(char *item, char *buff, uint8_t *chipid)
 {
-    sprintf(buff,"%s/thermostat/%x%x%x/setup/%s",
-         comminfo->mqtt_prefix, chipid[3],chipid[4],chipid[5], item);
+    sprintf(buff,"%s/%s/%x%x%x/setup/%s",
+         comminfo->mqtt_prefix, appname, chipid[3],chipid[4],chipid[5], item);
     return buff;
 }     
-
 
 // {"dev":"5bdddc","id":"heatsetup","pwmlen":15,"target":25.50,"hiboost":1,"lodeduct":1}
 
 static void sendSetup(esp_mqtt_client_handle_t client, uint8_t *chipid)
 {
     gpio_set_level(BLINK_GPIO, true);
-
+    time_t now;
     char setupTopic[64];
 
+    time(&now);
     sprintf(jsondata, "{\"dev\":\"%x%x%x\",\"id\":\"pidsetup\","
                       "\"max\":%2.2f,\"pidkp\":%2.2f,\"pidki\":%2.2f,\"pidkd\":%2.2f}",
                 chipid[3],chipid[4],chipid[5],
@@ -696,6 +755,23 @@ static void sendSetup(esp_mqtt_client_handle_t client, uint8_t *chipid)
                 temperature, raw);
     esp_mqtt_client_publish(client, mkSetupTopic("calibratelow",setupTopic, chipid), jsondata , 0, 0, 1);                
     sendcnt++;
+
+    for (int i = 0; ; i++)
+    {
+        char *sensoraddr = temperature_getsensor(i);
+
+        if (sensoraddr == NULL) break;
+        sprintf(setupTopic,"%s/%s/%x%x%x/sensorfriendlyname/%s",
+            comminfo->mqtt_prefix, appname, chipid[3],chipid[4],chipid[5], sensoraddr);
+
+        sprintf(jsondata, "{\"dev\":\"%x%x%x\",\"id\":\"sensorfriendlyname\",\"sensor\":\"%s\",\"name\":\"%s\"}",
+                    chipid[3],chipid[4],chipid[5],
+                    sensoraddr, temperature_get_friendlyname(i));
+
+        esp_mqtt_client_publish(client, mkSetupTopic("sensorfriendlyname",setupTopic, chipid), jsondata , 0, 0, 1);
+        sendcnt++;
+    }
+    sendTargetInfo(client, chipid, setup.target + elpriceInfluence, now);
 
     gpio_set_level(BLINK_GPIO, false);
 }
@@ -844,7 +920,7 @@ void app_main(void)
         wifi_connect(comminfo->ssid, comminfo->password);
         esp_wifi_set_ps(WIFI_PS_NONE);
         evt_queue = xQueueCreate(10, sizeof(struct measurement));
-        temperatures_init(TEMP_BUS, chipid);
+
 
         setup.pwmlen       = flash_read("pwmlen", setup.pwmlen);
         setup.interval     = flash_read("interval", setup.interval);
@@ -860,8 +936,35 @@ void app_main(void)
         setup.hiboost      = flash_read_float("hiboost", setup.hiboost);
         setup.lodeduct     = flash_read_float("lodeduct", setup.lodeduct);
 
-        ntc_init(chipid, setup.interval * 1000, setup.samples);
-        program_version = ota_init(comminfo->mqtt_prefix, "thermostat", chipid);
+        int sensorcnt = temperature_init(TEMP_BUS, appname, chipid, 4);
+        if (sensorcnt)
+        {
+            char *sensoraddr;
+            char *friendlyname;
+            for (int i = 0; i < sensorcnt; i++)
+            {
+                sensoraddr   = temperature_getsensor(i);
+                if (sensoraddr == NULL) break;
+                friendlyname = flash_read_str(sensoraddr, sensoraddr, 20);
+                if (strcmp(friendlyname, sensoraddr))
+                {
+                    if (!temperature_set_friendlyname(sensoraddr, friendlyname))
+                    {
+                        ESP_LOGD(TAG, "Set friendlyname for %s failed", sensoraddr);
+                    }
+                    free(friendlyname); // flash_read_str does dynamic allocation
+                }
+            }
+        }
+
+        while (1)
+        {
+            if (ntc_init(chipid, setup.interval * 1000, setup.samples))
+                break;
+            else
+                vTaskDelay(1000 / portTICK_PERIOD_MS);
+        }    
+        program_version = ota_init(comminfo->mqtt_prefix, appname, chipid);
         display_brightness(setup.brightness);
         heater_init(setup.pwmlen, HEATER_POWERLEVELS);
         pidcontroller_init(&pidCtl, comminfo->mqtt_prefix, chipid, setup.max, HEATER_POWERLEVELS-1, setup.interval, setup.kp, setup.ki, setup.kd);
@@ -870,15 +973,15 @@ void app_main(void)
 
         ESP_LOGI(TAG, "[APP] All init done, app_main, last line.");
 
-        sprintf(statisticsTopic,"%s/thermostat/%x%x%x/statistics",
-            comminfo->mqtt_prefix, chipid[3],chipid[4],chipid[5]);
+        sprintf(statisticsTopic,"%s/%s/%x%x%x/statistics",
+            comminfo->mqtt_prefix, appname, chipid[3],chipid[4],chipid[5]);
         ESP_LOGI(TAG,"statisticsTopic=[%s]", statisticsTopic);
 
-        sprintf(setupTopic,"%s/thermostat/%x%x%x/setsetup",
-            comminfo->mqtt_prefix, chipid[3],chipid[4],chipid[5]);
+        sprintf(setupTopic,"%s/%s/%x%x%x/setsetup",
+            comminfo->mqtt_prefix, appname, chipid[3],chipid[4],chipid[5]);
 
-        sprintf(otaUpdateTopic,"%s/thermostat/%x%x%x/otaupdate",
-            comminfo->mqtt_prefix, chipid[3],chipid[4],chipid[5]);
+        sprintf(otaUpdateTopic,"%s/%s/%x%x%x/otaupdate",
+            comminfo->mqtt_prefix, appname, chipid[3],chipid[4],chipid[5]);
         sprintf(elpriceTopic,"%s/elprice/#", comminfo->mqtt_prefix);
 
         // it is very propable, we will not get correct timestamp here.

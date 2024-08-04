@@ -21,6 +21,20 @@ menu "Thermostat Configuration"
         help
             This led is lit when mqtt is in connected state.
 
+    config HEATER_GPIO
+        int "Heating element gpio"
+        range 0 36
+        default 22
+        help
+            The solid state relay is controlled by this.
+
+    config SENDING_GPIO
+        int "Indicator for mqtt send"
+        range 0 36
+        default 2
+        help
+            This led flashes when there is mqtt send going.
+
     config ESP_WIFI_SSID
         string "WiFi SSID"
         default "myssid"
@@ -46,23 +60,23 @@ menu "Thermostat Configuration"
         help
             Max number of the STA connects to AP.
 
-    config EXAMPLE_PIN_NUM_MOSI
+    config PIN_NUM_MOSI
         int "GPIO number of MOSI"
         default 19 
         help
-            GPIO number of MOSI
+            7-seg GPIO number of MOSI
 
-    config EXAMPLE_PIN_NUM_CLK
+    config PIN_NUM_CLK
         int "GPIO number of CLK"
         default 18
         help
-            GPIO number of CLK
+            7-seg GPIO number of CLK
 
-    config EXAMPLE_PIN_NUM_CS
+    config PIN_NUM_CS
         int "GPIO number of CS"
         default 5
         help
-            GPIO number of CS
+            7-seg GPIO number of CS
 
     config OTA_RECV_TIMEOUT
         int "OTA Receive Timeout"
