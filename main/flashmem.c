@@ -66,7 +66,7 @@ void flash_write_str(char *name, char *value)
     esp_err_t err;
 
     err = nvs_set_str(nvsh, name, value);
-    ESP_LOGI(TAG,"Updating %s in NVS %s ", name, (err != ESP_OK) ? "Failed!" : "Done");
+    ESP_LOGI(TAG,"Updating %s = %s in NVS %s ", name, value, (err != ESP_OK) ? "Failed!" : "Done");
 }
 
 
