@@ -7,6 +7,7 @@
 #include "driver/gpio.h"
 #include "mqtt_client.h"
 #include "homeapp.h"
+#include "statistics.h"
 #include "pidcontroller.h"
 
 static const char *TAG = "pidcontroller";
@@ -119,8 +120,15 @@ int pidcontroller_tune(PID *p, float measurement)
 bool pidcontroller_publish(PID *p, struct measurement *data, esp_mqtt_client_handle_t client)
 {
     time_t now;
+    int retain = 1;
 
     time(&now);
+
+    if (now < MIN_EPOCH)
+    {
+        now = 0;
+        retain = 0;
+    }
     gpio_set_level(BLINK_GPIO, true);
 
     static const char *datafmt = "{\"dev\":\"%x%x%x\",\"id\":\"thermostat\",\"value\":%d,\"ts\":%jd}";
@@ -128,8 +136,8 @@ bool pidcontroller_publish(PID *p, struct measurement *data, esp_mqtt_client_han
                 p->chipid[3],p->chipid[4],p->chipid[5],
                 data->data.count,
                 now);
-    esp_mqtt_client_publish(client, p->topic, jsondata , 0, 0, 1);
-    sendcnt++;
+    esp_mqtt_client_publish(client, p->topic, jsondata , 0, 0, retain);
+    statistics->sendcnt++;
     gpio_set_level(BLINK_GPIO, false);
     return true;
 }
