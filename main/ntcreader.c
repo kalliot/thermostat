@@ -10,7 +10,7 @@
 #include "driver/gpio.h"
 #include "mqtt_client.h"
 #include "flashmem.h"
-#include "statistics.h"
+#include "statistics/statistics.h"
 #include "homeapp.h"
 
 
@@ -232,7 +232,7 @@ bool ntc_send(char *prefix, struct measurement *data, esp_mqtt_client_handle_t c
                 data->data.temperature,
                 now);
     esp_mqtt_client_publish(client, temperatureTopic, jsondata , 0, 0, retain);
-    statistics->sendcnt++;
+    statistics_getptr()->sendcnt++;
     gpio_set_level(BLINK_GPIO, false);
     return true;
 }

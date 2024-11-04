@@ -7,7 +7,7 @@
 #include "driver/gpio.h"
 #include "mqtt_client.h"
 #include "homeapp.h"
-#include "statistics.h"
+#include "statistics/statistics.h"
 #include "pidcontroller.h"
 
 static const char *TAG = "pidcontroller";
@@ -137,7 +137,7 @@ bool pidcontroller_publish(PID *p, struct measurement *data, esp_mqtt_client_han
                 data->data.count,
                 now);
     esp_mqtt_client_publish(client, p->topic, jsondata , 0, 0, retain);
-    statistics->sendcnt++;
+    statistics_getptr()->sendcnt++;
     gpio_set_level(BLINK_GPIO, false);
     return true;
 }

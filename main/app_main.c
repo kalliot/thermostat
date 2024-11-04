@@ -42,7 +42,7 @@
 #include "mqtt_client.h"
 #include "apwebserver/server.h"
 #include "factoryreset.h"
-#include "statistics.h"
+#include "statistics/statistics.h"
 
 #define TEMP_BUS              25
 #define STATISTICS_INTERVAL 1800
@@ -126,19 +126,6 @@ PID pidCtl = {
     .topic[0]   = 0
 };
 
-
-
-struct specialTemperature
-{
-    char timestr[11];
-    float price;
-};
-
-struct specialTemperature *hitemp = NULL;
-struct specialTemperature *lotemp = NULL;
-
-int hitempcnt = 0;
-int lotempcnt = 0;
 
 // globals
 struct netinfo *comminfo;
@@ -224,72 +211,6 @@ static bool getJsonFloat(cJSON *js, char *name, float *val)
 }
 
 
-static struct specialTemperature *jsonToHiLoTable(cJSON *js, char *name, int *cnt, struct specialTemperature *tempArr)
-{
-    cJSON *item = cJSON_GetObjectItem(js, name);
-    int itemCnt=0;
-
-    if (item != NULL)
-    {
-        if (cJSON_IsArray(item))
-        {
-            itemCnt = cJSON_GetArraySize(item);
-
-            // table should be allocated or reallocated, if count of lines differ.
-            if (*cnt == 0 || itemCnt != *cnt) // we already had a table
-            {
-                *cnt = itemCnt;
-                if (tempArr != NULL)
-                {
-                    free(tempArr);   // array sizes are different, free old one and allocate a new one.
-                    tempArr = NULL;  // no array items in json.
-                }
-                if (itemCnt)
-                {
-                    tempArr = (struct specialTemperature *) malloc(itemCnt * sizeof(struct specialTemperature));
-                }
-            }
-            if (tempArr != NULL)
-            {
-                for (int i=0;i<itemCnt;i++)
-                {
-                    cJSON *elem = cJSON_GetArrayItem(item, i);
-                    if (elem != NULL)
-                    {
-                        cJSON *jstime = cJSON_GetObjectItem(elem, "time");
-                        if (jstime != NULL)
-                        {
-                            if (cJSON_IsString(jstime))
-                            {
-                                strcpy(tempArr[i].timestr,jstime->valuestring);
-                            }
-                        }
-
-                        cJSON *jsprice = cJSON_GetObjectItem(elem, "price");
-                        if (jsprice != NULL)
-                        {
-                            if (cJSON_IsNumber(jsprice))
-                            {
-                                tempArr[i].price = jsprice->valuedouble;
-                            }
-                        }
-                    }
-                }
-            }
-        }
-    }
-    return tempArr;
-}
-
-static bool isInArray(char *str, struct specialTemperature *arr, int cnt)
-{
-    for (int i = 0; i < cnt; i++)
-    {
-        if (!strcmp(str,arr[i].timestr))
-            return true;
-    }
-    return false;
-}
 
 
 // pidcontroller config
@@ -360,26 +281,27 @@ bool sendTargetInfo(esp_mqtt_client_handle_t client, uint8_t *chipid, float targ
                 target,
                 now);
     esp_mqtt_client_publish(client, targetTopic, jsondata , 0, 0, retain);
-    statistics->sendcnt++;
+    statistics_getptr()->sendcnt++;
     gpio_set_level(BLINK_GPIO, false);
     return true;
 }
 
+
 bool checkPriceInfluence(cJSON *root)
 {
     float newInfluence = 0.0;
-    char *daystr = getJsonStr(root,"day");
+    char *pricestate = getJsonStr(root,"pricestate");
     bool ret = false;
 
-    if (isInArray(daystr, hitemp, hitempcnt))
+    if (!strcmp(pricestate,"low"))
     {
-        ESP_LOGI(TAG,"HITEMP IS ON!");
+        ESP_LOGI(TAG,"Lo price, BIGGER TEMP IS ON!");
         newInfluence = setup.hiboost;
     }
-    else if (isInArray(daystr, lotemp, lotempcnt))
+    else if (!strcmp(pricestate,"high"))
     {
-        ESP_LOGI(TAG,"LOTEMP IS ON!");
-        newInfluence = -1.0 * setup.lodeduct;
+        ESP_LOGI(TAG,"Hi price, COOLER TEMP IS ON!");
+        newInfluence = -1 * setup.lodeduct;
     }
     else
     {
@@ -394,6 +316,7 @@ bool checkPriceInfluence(cJSON *root)
     }
     return ret;
 }
+
 
 
 /*
@@ -475,14 +398,6 @@ static uint8_t handleJson(esp_mqtt_event_handle_t event, uint8_t *chipid)
                 if (prevBrightness == 0) temperature_sendall(); // refresh display
                 ret |= SETUP_DISPLAY;
             }
-        }
-        else if (!strcmp(id,"awhightemp"))
-        {
-            hitemp = jsonToHiLoTable(root,"values", &hitempcnt, hitemp);
-        }
-        else if (!strcmp(id,"awlowtemp"))
-        {
-            lotemp = jsonToHiLoTable(root,"values", &lotempcnt, lotemp);
         }
         else if (!strcmp(id,"heatsetup"))
         {
@@ -586,13 +501,13 @@ static void mqtt_event_handler(void *handler_args, esp_event_base_t base, int32_
             ntc_sendcurrent();
             pidcontroller_send_last(&pidCtl);
             isConnected = true;
-            statistics->connectcnt++;
+            statistics_getptr()->connectcnt++;
             healthyflags |= HEALTHYFLAGS_MQTT;
         break;
 
     case MQTT_EVENT_DISCONNECTED:
         ESP_LOGI(TAG, "MQTT_EVENT_DISCONNECTED");
-        statistics->disconnectcnt++;
+        statistics_getptr()->disconnectcnt++;
         isConnected = false;
         gpio_set_level(MQTTSTATUS_GPIO, false);
         break;
@@ -669,7 +584,7 @@ static void sendInfo(esp_mqtt_client_handle_t client, uint8_t *chipid)
                 esp_get_idf_version(),
                 program_version);
     esp_mqtt_client_publish(client, infoTopic, jsondata , 0, 0, 1);
-    statistics->sendcnt++;
+    statistics_getptr()->sendcnt++;
     ESP_LOGI(TAG,"sending info");
     gpio_set_level(BLINK_GPIO, false);
 }
@@ -708,7 +623,7 @@ static void sendSetup(esp_mqtt_client_handle_t client, uint8_t *chipid, uint8_t 
                     setup.max, setup.kp, setup.ki, setup.kd);
         esp_mqtt_client_publish(client, mkSetupTopic("pid",tmpTopic, chipid,-1), jsondata , 0, 0, 1);
         flags &= ~SETUP_PID;
-        statistics->sendcnt++;
+        statistics_getptr()->sendcnt++;
     }
 
     if (flags & SETUP_NTC)
@@ -718,7 +633,7 @@ static void sendSetup(esp_mqtt_client_handle_t client, uint8_t *chipid, uint8_t 
                     setup.interval, setup.samples);
         esp_mqtt_client_publish(client, mkSetupTopic("ntc",tmpTopic, chipid,-1), jsondata , 0, 0, 1);
         flags &= ~SETUP_NTC;
-        statistics->sendcnt++;
+        statistics_getptr()->sendcnt++;
     }
 
     if (flags & SETUP_HEAT)
@@ -730,7 +645,7 @@ static void sendSetup(esp_mqtt_client_handle_t client, uint8_t *chipid, uint8_t 
                     setup.pwmlen , setup.target, setup.hiboost, setup.lodeduct);
         esp_mqtt_client_publish(client, mkSetupTopic("heat",tmpTopic, chipid,-1), jsondata , 0, 0, 1);
         flags &= ~SETUP_HEAT;
-        statistics->sendcnt++;
+        statistics_getptr()->sendcnt++;
     }
 
     if (flags & SETUP_DISPLAY)
@@ -740,7 +655,7 @@ static void sendSetup(esp_mqtt_client_handle_t client, uint8_t *chipid, uint8_t 
                     setup.brightness);
         esp_mqtt_client_publish(client, mkSetupTopic("brightness",tmpTopic, chipid,-1), jsondata , 0, 0, 1);
         flags &= ~SETUP_DISPLAY;
-        statistics->sendcnt++;
+        statistics_getptr()->sendcnt++;
     }
 
     if (flags & SETUP_CALIBR)
@@ -753,7 +668,7 @@ static void sendSetup(esp_mqtt_client_handle_t client, uint8_t *chipid, uint8_t 
                     chipid[3],chipid[4],chipid[5],
                     temperature, raw);
         esp_mqtt_client_publish(client, mkSetupTopic("calibratehigh",setupTopic, chipid,-1), jsondata , 0, 0, 1);
-        statistics->sendcnt++;
+        statistics_getptr()->sendcnt++;
 
         raw = ntc_get_calibr_low(&temperature);
         sprintf(jsondata, "{\"dev\":\"%x%x%x\",\"id\":\"calibratelow\",\"temperature\":%2.2f,\"raw\":%d}",
@@ -761,7 +676,7 @@ static void sendSetup(esp_mqtt_client_handle_t client, uint8_t *chipid, uint8_t 
                     temperature, raw);
         esp_mqtt_client_publish(client, mkSetupTopic("calibratelow",setupTopic, chipid,-1), jsondata , 0, 0, 1);
         flags &= ~SETUP_CALIBR;
-        statistics->sendcnt++;
+        statistics_getptr()->sendcnt++;
     }
 
     if (flags & SETUP_NAMES)
@@ -779,7 +694,7 @@ static void sendSetup(esp_mqtt_client_handle_t client, uint8_t *chipid, uint8_t 
                         sensoraddr, temperature_get_friendlyname(i));
 
             esp_mqtt_client_publish(client, mkSetupTopic("sensorfriendlyname",setupTopic, chipid, i), jsondata , 0, 0, 1);
-            statistics->sendcnt++;
+            statistics_getptr()->sendcnt++;
         }
         flags &= ~SETUP_NAMES;
     }
@@ -1005,8 +920,7 @@ void app_main(void)
 
         ESP_LOGI(TAG, "[APP] All init done, app_main, last line.");
 
-        statistics = statistics_init(comminfo->mqtt_prefix, appname, chipid);
-        if (!statistics)
+        if (!statistics_init(comminfo->mqtt_prefix, appname, chipid))
         {
             ESP_LOGE(TAG,"failed in statistics init");
         }
@@ -1034,8 +948,7 @@ void app_main(void)
             struct measurement meas;
 
             time(&now);
-
-            if ((now - statistics->started > 20) &&
+            if ((now - statistics_getptr()->started > 20) &&
                 (healthyflags == (HEALTHYFLAGS_WIFI | HEALTHYFLAGS_MQTT | HEALTHYFLAGS_NTP | HEALTHYFLAGS_TEMP)))
             {
                 ota_cancel_rollback();
@@ -1043,15 +956,15 @@ void app_main(void)
 
             if (now > MIN_EPOCH)
             {
-                if (statistics->started < MIN_EPOCH)
+                if (statistics_getptr()->started < MIN_EPOCH)
                 {
-                    statistics->started = now;
+                    statistics_getptr()->started = now;
                 }
                 if (now - prevStatsTs >= STATISTICS_INTERVAL)
                 {
                     if (isConnected)
                     {
-                        statistics_send(client, statistics);
+                        statistics_send(client);
                         prevStatsTs = now;
                     }
                 }
@@ -1060,9 +973,9 @@ void app_main(void)
             if(xQueueReceive(evt_queue, &meas, 4 * 1000 * setup.interval / portTICK_PERIOD_MS))
             {
                 uint16_t qcnt = uxQueueMessagesWaiting(evt_queue);
-                if (qcnt > statistics->maxQElements)
+                if (qcnt > statistics_getptr()->maxQElements)
                 {
-                    statistics->maxQElements = qcnt;
+                    statistics_getptr()->maxQElements = qcnt;
                 }
                 switch (meas.id) {
                     case NTC:

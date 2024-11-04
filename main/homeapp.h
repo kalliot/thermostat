@@ -25,7 +25,6 @@ extern QueueHandle_t evt_queue;
 extern char jsondata[];
 extern uint16_t sendcnt;
 extern uint16_t sensorerrors;
-extern struct statistics *statistics;
 
 #define BLINK_GPIO         CONFIG_SENDING_GPIO
 #define SETUP_GPIO         CONFIG_SETUPLED_GPIO
