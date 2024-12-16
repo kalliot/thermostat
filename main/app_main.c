@@ -130,7 +130,7 @@ PID pidCtl = {
 // globals
 struct netinfo *comminfo;
 QueueHandle_t evt_queue = NULL;
-char jsondata[256];
+char jsondata[512];
 
 static const char *TAG = "THERMOSTAT";
 static bool isConnected = false;
@@ -494,7 +494,7 @@ static void mqtt_event_handler(void *handler_args, esp_event_base_t base, int32_
             msg_id = esp_mqtt_client_subscribe(client, otaUpdateTopic , 0);
             ESP_LOGI(TAG, "sent subscribe %s successful, msg_id=%d", otaUpdateTopic, msg_id);
 
-            gpio_set_level(MQTTSTATUS_GPIO, true);
+            gpio_set_level(MQTTSTATUS_GPIO, false);
             device_sendstatus(client, comminfo->mqtt_prefix, appname, (uint8_t *) handler_args);
             sendInfo(client, (uint8_t *) handler_args);
             sendSetup(client, (uint8_t *) handler_args, SETUP_ALL);
@@ -509,7 +509,7 @@ static void mqtt_event_handler(void *handler_args, esp_event_base_t base, int32_
         ESP_LOGI(TAG, "MQTT_EVENT_DISCONNECTED");
         statistics_getptr()->disconnectcnt++;
         isConnected = false;
-        gpio_set_level(MQTTSTATUS_GPIO, false);
+        gpio_set_level(MQTTSTATUS_GPIO, true);
         break;
 
     case MQTT_EVENT_SUBSCRIBED:
@@ -681,6 +681,31 @@ static void sendSetup(esp_mqtt_client_handle_t client, uint8_t *chipid, uint8_t 
 
     if (flags & SETUP_NAMES)
     {
+        sprintf(setupTopic,"%s/%s/%x%x%x/tempsensors",
+            comminfo->mqtt_prefix, appname, chipid[3],chipid[4],chipid[5]);
+        sprintf(jsondata, "{\"dev\":\"%x%x%x\",\"id\":\"tempsensors\",\"names\":[",
+            chipid[3],chipid[4],chipid[5]);
+
+        char sensorname[40];
+
+        for (int i = 0; ; i++)
+        {
+            char *sensoraddr = temperature_getsensor(i);
+
+            if (sensoraddr == NULL) break;
+            sprintf(sensorname,"{\"addr\":\"%s\",\"name\":\"%s\"},",
+                sensoraddr, temperature_get_friendlyname(i));
+            strcat(jsondata,sensorname);
+        }
+        jsondata[strlen(jsondata)-1] = 0; // cut last comma
+        strcat(jsondata,"]}");
+        esp_mqtt_client_publish(client, setupTopic, jsondata , 0, 0, 1);
+        statistics_getptr()->sendcnt++;
+    }
+
+/*
+    if (flags & SETUP_NAMES)
+    {
         for (int i = 0; ; i++)
         {
             char *sensoraddr = temperature_getsensor(i);
@@ -698,7 +723,7 @@ static void sendSetup(esp_mqtt_client_handle_t client, uint8_t *chipid, uint8_t 
         }
         flags &= ~SETUP_NAMES;
     }
-
+*/
     if (flags & SETUP_TARGET)
     {
         sendTargetInfo(client, chipid, setup.target + elpriceInfluence, now);
@@ -749,7 +774,7 @@ static void wifi_event_handler(void *event_handler_arg, esp_event_base_t event_b
 
         case WIFI_EVENT_STA_DISCONNECTED:
             ESP_LOGI(TAG,"WiFi lost connection");
-            gpio_set_level(WLANSTATUS_GPIO, false);
+            gpio_set_level(WLANSTATUS_GPIO, true);
             if(retry_num < WIFI_RECONNECT_RETRYCNT){
                 esp_wifi_connect();
                 retry_num++;
@@ -759,7 +784,7 @@ static void wifi_event_handler(void *event_handler_arg, esp_event_base_t event_b
 
         case IP_EVENT_STA_GOT_IP:
             ESP_LOGI(TAG,"Wifi got IP");
-            gpio_set_level(WLANSTATUS_GPIO, true);
+            gpio_set_level(WLANSTATUS_GPIO, false);
             retry_num = 0;
             healthyflags |= HEALTHYFLAGS_WIFI;
             break;
@@ -845,6 +870,10 @@ void app_main(void)
     gpio_set_direction(WLANSTATUS_GPIO, GPIO_MODE_OUTPUT);
     gpio_set_direction(SETUP_GPIO, GPIO_MODE_OUTPUT);
     gpio_set_direction(MQTTSTATUS_GPIO, GPIO_MODE_OUTPUT);
+    gpio_set_level(SETUP_GPIO, true);
+    gpio_set_level(WLANSTATUS_GPIO, true);
+    gpio_set_level(MQTTSTATUS_GPIO, true);
+    gpio_set_level(BLINK_GPIO, true);
 
     display_init();
     display_clear();
@@ -852,10 +881,10 @@ void app_main(void)
     get_appname();
     flash_open("storage");
     comminfo = get_networkinfo();
+
     if (comminfo == NULL)
     {
         display_text(" setup ");
-        gpio_set_level(SETUP_GPIO, true);
         server_init(); // starting ap webserver
     }
     else
@@ -943,6 +972,7 @@ void app_main(void)
         tune = pidcontroller_tune(&pidCtl, sample);
         heater_setlevel(tune);
 
+        gpio_set_level(SETUP_GPIO, false);
         while (1)
         {
             struct measurement meas;
