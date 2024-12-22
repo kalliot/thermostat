@@ -121,6 +121,7 @@ bool pidcontroller_publish(PID *p, struct measurement *data, esp_mqtt_client_han
 {
     time_t now;
     int retain = 1;
+    char buff[80];
 
     time(&now);
 
@@ -132,11 +133,11 @@ bool pidcontroller_publish(PID *p, struct measurement *data, esp_mqtt_client_han
     gpio_set_level(BLINK_GPIO, true);
 
     static const char *datafmt = "{\"dev\":\"%x%x%x\",\"id\":\"thermostat\",\"value\":%d,\"ts\":%jd}";
-    sprintf(jsondata, datafmt,
-                p->chipid[3],p->chipid[4],p->chipid[5],
+    sprintf(buff, datafmt,
+                p->chipid[3],p ->chipid[4],p->chipid[5],
                 data->data.count,
                 now);
-    esp_mqtt_client_publish(client, p->topic, jsondata , 0, 0, retain);
+    esp_mqtt_client_publish(client, p->topic, buff , 0, 0, retain);
     statistics_getptr()->sendcnt++;
     gpio_set_level(BLINK_GPIO, false);
     return true;

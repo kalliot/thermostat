@@ -144,6 +144,8 @@ static int retry_num = 0;
 static float elpriceInfluence = 0.0;
 static char *program_version = ""; 
 static char appname[20];
+SemaphoreHandle_t mqttBuffMtx;
+
 
 static void sendSetup(esp_mqtt_client_handle_t client, uint8_t *chipid, uint8_t flags);
 static void sendInfo(esp_mqtt_client_handle_t client, uint8_t *chipid);
@@ -277,9 +279,9 @@ bool sendTargetInfo(esp_mqtt_client_handle_t client, uint8_t *chipid, float targ
         now = 0;
     }
     sprintf(jsondata, datafmt,
-                chipid[3],chipid[4],chipid[5],
-                target,
-                now);
+                    chipid[3],chipid[4],chipid[5],
+                    target,
+                    now);
     esp_mqtt_client_publish(client, targetTopic, jsondata , 0, 0, retain);
     statistics_getptr()->sendcnt++;
     gpio_set_level(BLINK_GPIO, false);
@@ -318,6 +320,12 @@ bool checkPriceInfluence(cJSON *root)
 }
 
 
+static void refresh_display(void)
+{
+    struct measurement meas;
+    meas.id = REFRESH_DISPLAY;
+    xQueueSend(evt_queue, &meas, 0);
+}
 
 /*
 ** Setup messages
@@ -395,7 +403,7 @@ static uint8_t handleJson(esp_mqtt_event_handle_t event, uint8_t *chipid)
             {
                 flash_write("brightness", setup.brightness);
                 display_brightness(setup.brightness);
-                if (prevBrightness == 0) temperature_sendall(); // refresh display
+                if (prevBrightness == 0) refresh_display();
                 ret |= SETUP_DISPLAY;
             }
         }
@@ -413,7 +421,8 @@ static uint8_t handleJson(esp_mqtt_event_handle_t event, uint8_t *chipid)
                 flash_write_float("target", setup.target);
                 int tune = pidcontroller_tune(&pidCtl, ntc_get_temperature());
                 heater_setlevel(tune);
-                pidcontroller_send_tune(&pidCtl, tune, true);
+                pidcontroller_send_tune(&pidCtl, tune, false);
+                ret |= SETUP_TARGET;
             }
             if (getJsonFloat(root, "hiboost", &setup.hiboost))
             {
@@ -702,28 +711,6 @@ static void sendSetup(esp_mqtt_client_handle_t client, uint8_t *chipid, uint8_t 
         esp_mqtt_client_publish(client, setupTopic, jsondata , 0, 0, 1);
         statistics_getptr()->sendcnt++;
     }
-
-/*
-    if (flags & SETUP_NAMES)
-    {
-        for (int i = 0; ; i++)
-        {
-            char *sensoraddr = temperature_getsensor(i);
-
-            if (sensoraddr == NULL) break;
-            sprintf(setupTopic,"%s/%s/%x%x%x/sensorfriendlyname/%s",
-                comminfo->mqtt_prefix, appname, chipid[3],chipid[4],chipid[5], sensoraddr);
-
-            sprintf(jsondata, "{\"dev\":\"%x%x%x\",\"id\":\"sensorfriendlyname\",\"sensor\":\"%s\",\"name\":\"%s\"}",
-                        chipid[3],chipid[4],chipid[5],
-                        sensoraddr, temperature_get_friendlyname(i));
-
-            esp_mqtt_client_publish(client, mkSetupTopic("sensorfriendlyname",setupTopic, chipid, i), jsondata , 0, 0, 1);
-            statistics_getptr()->sendcnt++;
-        }
-        flags &= ~SETUP_NAMES;
-    }
-*/
     if (flags & SETUP_TARGET)
     {
         sendTargetInfo(client, chipid, setup.target + elpriceInfluence, now);
@@ -1008,6 +995,10 @@ void app_main(void)
                     statistics_getptr()->maxQElements = qcnt;
                 }
                 switch (meas.id) {
+                    case REFRESH_DISPLAY:
+                        display_show(ntc, ds);
+                    break;
+
                     case NTC:
                         ntc = meas.data.temperature;
                         if (isConnected) ntc_send(comminfo->mqtt_prefix, &meas, client);

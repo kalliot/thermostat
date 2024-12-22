@@ -1,14 +1,17 @@
 #ifndef __THERMOSTAT__
 #define __THERMOSTAT__
 
+#include "freertos/FreeRTOS.h"
 #include "freertos/queue.h"
+#include "freertos/semphr.h"
 
 enum meastype
 {
     NTC,
     HEATER,
     TEMPERATURE,
-    OTA
+    OTA,
+    REFRESH_DISPLAY
 };
 
 struct measurement {
