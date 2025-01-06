@@ -238,7 +238,7 @@ bool ntc_send(char *prefix, struct measurement *data, esp_mqtt_client_handle_t c
 }
 
 
-bool ntc_init(uint8_t *chip, int intervalMs, int cnt)
+bool ntc_init(uint8_t *chip, adc_oneshot_unit_handle_t adc_handle, int intervalMs, int cnt)
 {
     mutex = xSemaphoreCreateMutex();
     if (mutex == NULL)
@@ -252,16 +252,13 @@ bool ntc_init(uint8_t *chip, int intervalMs, int cnt)
     calibr[CAL_MAX].raw   = flash_read(calibr[CAL_MAX].rawname,  calibr[CAL_MAX].raw);
     calibr[CAL_MAX].temp  = flash_read_float(calibr[CAL_MAX].tempname, calibr[CAL_MAX].temp);
 
-    adc_oneshot_unit_init_cfg_t init_config1 = {
-        .unit_id = ADC_UNIT_1,
-    };
-    adc_oneshot_new_unit(&init_config1, &adc1_handle);
     chipid = chip;
     adc_oneshot_chan_cfg_t config = {
         .bitwidth = ADC_BITWIDTH_DEFAULT,
         .atten = ADC_ATTEN_DB_6
     };
-    adc_oneshot_config_channel(adc1_handle, ADC_CHANNEL_0, &config);
+    adc1_handle = adc_handle;
+    adc_oneshot_config_channel(adc_handle, ADC_CHANNEL_0, &config);
     // mutex is here not needed, we are not yet threading.
     temperature = convert(ntc_read());
     ESP_LOGI(TAG,"ntc_init, first temperature read is %f", temperature);

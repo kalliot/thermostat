@@ -11,7 +11,8 @@ enum meastype
     HEATER,
     TEMPERATURE,
     OTA,
-    REFRESH_DISPLAY
+    REFRESH_DISPLAY,
+    LDR
 };
 
 struct measurement {

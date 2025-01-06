@@ -24,6 +24,7 @@
 #include "freertos/task.h"
 #include "freertos/semphr.h"
 #include "freertos/queue.h"
+#include "esp_adc/adc_oneshot.h"
 
 #include "lwip/sockets.h"
 #include "lwip/dns.h"
@@ -35,6 +36,7 @@
 #include "flashmem.h"
 #include "display.h"
 #include "ntcreader.h"
+#include "ldrreader.h"
 #include "heater.h"
 #include "pidcontroller.h"
 #include "ota/ota.h"
@@ -831,7 +833,8 @@ void app_main(void)
     uint8_t chipid[8];
     time_t now, prevStatsTs;
     esp_efuse_mac_get_default(chipid);
-
+    adc_oneshot_unit_handle_t adc_handle;
+    int prevBrightness = 0;
     int tune;
 
     ESP_LOGI(TAG, "[APP] Startup..");
@@ -920,13 +923,19 @@ void app_main(void)
             }
         }
 
+        adc_oneshot_unit_init_cfg_t init_config1 = {
+            .unit_id = ADC_UNIT_1,
+        };
+        adc_oneshot_new_unit(&init_config1, &adc_handle);
+
         while (1)
         {
-            if (ntc_init(chipid, setup.interval * 1000, setup.samples))
+            if (ntc_init(chipid, adc_handle, setup.interval * 1000, setup.samples))
                 break;
             else
                 vTaskDelay(1000 / portTICK_PERIOD_MS);
         }    
+        ldr_init(chipid, adc_handle, 1000, setup.samples);
         program_version = ota_init(comminfo->mqtt_prefix, appname, chipid);
         display_brightness(setup.brightness);
         heater_init(setup.pwmlen, HEATER_POWERLEVELS);
@@ -997,6 +1006,14 @@ void app_main(void)
                 switch (meas.id) {
                     case REFRESH_DISPLAY:
                         display_show(ntc, ds);
+                    break;
+
+                    case LDR:
+                        ESP_LOGI(TAG,"got brightness %d", meas.data.count);
+                        ldr_publish(comminfo->mqtt_prefix, &meas, client);
+                        display_brightness(meas.data.count);
+                        if (prevBrightness == 0) refresh_display();
+                        prevBrightness = meas.data.count;
                     break;
 
                     case NTC:
