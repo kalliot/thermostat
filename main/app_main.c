@@ -94,7 +94,6 @@ struct {
     // ntc
     int interval;
     int samples;
-    int brightness;
 
     // pidcontroller
     float max;
@@ -108,7 +107,7 @@ struct {
     float hiboost;
     float lodeduct;
 
-} setup = { 15, 10, 0,
+} setup = { 15, 10,
             35, 5 , 1, 3,
             15, 24, 1, 1};
 
@@ -323,16 +322,8 @@ bool checkPriceInfluence(cJSON *root)
 }
 
 
-static void refresh_display(void)
-{
-    struct measurement meas;
-    meas.id = REFRESH_DISPLAY;
-    xQueueSend(evt_queue, &meas, 0);
-}
-
 /*
 ** Setup messages
-{"dev":"5bdddc","id":"brightness","value":0}
 {"dev":"5bdddc","id":"calibratehigh","temperature":25.38}                           ntc should be in this temperature
 {"dev":"5bdddc","id":"calibratelow","temperature":20.02}                            ntc should be in this temperature
 {"dev":"5bdddc","id":"calibratesave"}                                               commit the calibrations
@@ -398,17 +389,6 @@ static uint8_t handleJson(esp_mqtt_event_handle_t event, uint8_t *chipid)
         else if (!strcmp(id,"calibratesave"))
         {
             ntc_save_calibrations();
-        }
-        else if (!strcmp(id,"brightness"))
-        {
-            int prevBrightness = setup.brightness;
-            if (getJsonInt(root, "value", &setup.brightness))
-            {
-                flash_write(setup_flash, "brightness", setup.brightness);
-                display_brightness(setup.brightness);
-                if (prevBrightness == 0) refresh_display();
-                ret |= SETUP_DISPLAY;
-            }
         }
         else if (!strcmp(id,"heatsetup"))
         {
@@ -618,6 +598,18 @@ static char *mkSetupTopic(char *item, char *buff, uint8_t *chipid, int id)
 }
 
 
+static void brightness_publish(esp_mqtt_client_handle_t client, uint8_t *chipid, int brightness)
+{
+    char tmpTopic[64];
+
+    sprintf(jsondata, "{\"dev\":\"%x%x%x\",\"id\":\"brightness\",\"value\":%d}",
+                chipid[3],chipid[4],chipid[5],
+                brightness);
+    esp_mqtt_client_publish(client, mkSetupTopic("brightness", tmpTopic, chipid,-1), jsondata , 0, 0, 1);
+    statistics_getptr()->sendcnt++;
+}
+
+
 // {"dev":"5bdddc","id":"heatsetup","pwmlen":15,"target":25.50,"hiboost":1,"lodeduct":1}
 
 static void sendSetup(esp_mqtt_client_handle_t client, uint8_t *chipid, uint8_t flags)
@@ -657,16 +649,6 @@ static void sendSetup(esp_mqtt_client_handle_t client, uint8_t *chipid, uint8_t 
                     setup.pwmlen , setup.target, setup.hiboost, setup.lodeduct);
         esp_mqtt_client_publish(client, mkSetupTopic("heat",tmpTopic, chipid,-1), jsondata , 0, 0, 1);
         flags &= ~SETUP_HEAT;
-        statistics_getptr()->sendcnt++;
-    }
-
-    if (flags & SETUP_DISPLAY)
-    {
-        sprintf(jsondata, "{\"dev\":\"%x%x%x\",\"id\":\"brightness\",\"value\":%d}",
-                    chipid[3],chipid[4],chipid[5],
-                    setup.brightness);
-        esp_mqtt_client_publish(client, mkSetupTopic("brightness",tmpTopic, chipid,-1), jsondata , 0, 0, 1);
-        flags &= ~SETUP_DISPLAY;
         statistics_getptr()->sendcnt++;
     }
 
@@ -897,7 +879,6 @@ void app_main(void)
 
         setup.pwmlen       = flash_read(setup_flash, "pwmlen", setup.pwmlen);
         setup.interval     = flash_read(setup_flash, "interval", setup.interval);
-        setup.brightness   = flash_read(setup_flash, "brightness", setup.brightness);
 
         setup.max          = flash_read_float(setup_flash, "pidmax", setup.max);
         setup.kp           = flash_read_float(setup_flash, "pidkp", setup.kp);
@@ -945,7 +926,6 @@ void app_main(void)
         }    
         ldr_init(chipid, adc_handle, 1000, setup.samples);
         program_version = ota_init(comminfo->mqtt_prefix, appname, chipid);
-        display_brightness(setup.brightness);
         heater_init(setup.pwmlen, HEATER_POWERLEVELS);
         pidcontroller_init(&pidCtl, comminfo->mqtt_prefix, chipid, setup.max, HEATER_POWERLEVELS-1, setup.interval, setup.kp, setup.ki, setup.kd);
         pidcontroller_target(&pidCtl, setup.target + elpriceInfluence);
@@ -1020,7 +1000,8 @@ void app_main(void)
                         ESP_LOGI(TAG,"got brightness %d", meas.data.count);
                         ldr_publish(comminfo->mqtt_prefix, &meas, client);
                         display_brightness(meas.data.count);
-                        if (prevBrightness == 0) refresh_display();
+                        if (prevBrightness == 0) display_show(ntc, ds);
+                        brightness_publish(client, chipid, meas.data.count);
                         prevBrightness = meas.data.count;
                     break;
 
