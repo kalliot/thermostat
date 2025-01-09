@@ -811,14 +811,17 @@ struct netinfo *get_networkinfo()
     static struct netinfo ni;
     char *default_ssid = "XXXXXXXX";
 
-    ni.ssid = flash_read_str(setup_flash, "ssid",default_ssid, 20);
+    nvs_handle wifi_flash = flash_open("wifisetup");
+    if (wifi_flash == -1) return NULL;
+
+    ni.ssid = flash_read_str(wifi_flash, "ssid",default_ssid, 20);
     if (!strcmp(ni.ssid,"XXXXXXXX"))
         return NULL;
 
-    ni.password    = flash_read_str(setup_flash, "password","pass", 20);
-    ni.mqtt_server = flash_read_str(setup_flash, "mqtt_server","test.mosquitto.org", 20);
-    ni.mqtt_port   = flash_read_str(setup_flash, "mqtt_port","1883", 6);
-    ni.mqtt_prefix = flash_read_str(setup_flash, "mqtt_prefix","home/esp", 20);
+    ni.password    = flash_read_str(wifi_flash, "password","pass", 20);
+    ni.mqtt_server = flash_read_str(wifi_flash, "mqtt_server","test.mosquitto.org", 20);
+    ni.mqtt_port   = flash_read_str(wifi_flash, "mqtt_port","1883", 6);
+    ni.mqtt_prefix = flash_read_str(wifi_flash, "mqtt_prefix","home/esp", 20);
     return &ni;
 }
 
@@ -870,16 +873,20 @@ void app_main(void)
     display_clear();
     display_show(88.88, 88.88);
     get_appname();
-    setup_flash = flash_open("storage");
+
     comminfo = get_networkinfo();
 
     if (comminfo == NULL)
     {
         display_text(" setup ");
+        gpio_set_level(WLANSTATUS_GPIO, false);
+        gpio_set_level(MQTTSTATUS_GPIO, false);
+        gpio_set_level(BLINK_GPIO, false);
         server_init(); // starting ap webserver
     }
     else
     {
+        setup_flash = flash_open("storage");
         sntp_start();
         gpio_install_isr_service(ESP_INTR_FLAG_DEFAULT);
         factoryreset_init();
