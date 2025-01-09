@@ -6,6 +6,7 @@
 #include "esp_log.h"
 #include "flashmem.h"
 #include "factoryreset.h"
+#include "homeapp.h"
 
 static int reset_gpio = 23;
 static SemaphoreHandle_t xSemaphore;
@@ -22,8 +23,8 @@ static void reset_reader(void *arg)
         if (xSemaphoreTake(xSemaphore, portMAX_DELAY)) {
             vTaskDelay(100 / portTICK_PERIOD_MS); // wait for all glitches
             if (gpio_get_level(reset_gpio) == 0) {
-                flash_erase_all();
-                flash_commitchanges();
+                flash_erase_all(setup_flash);
+                flash_commitchanges(setup_flash);
                 ESP_LOGI(TAG,"**** restarting ****");
                 vTaskDelay(200 / portTICK_PERIOD_MS); 
                 esp_restart();

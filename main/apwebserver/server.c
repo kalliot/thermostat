@@ -134,7 +134,7 @@ static esp_err_t form_get_handler(httpd_req_t *req)
                     {
                         char *result = urlDecode(param);
                         ESP_LOGI(TAG, "%s=%s", form_fields[i].formname, result);
-                        flash_write_str(form_fields[i].flashname, result);
+                        flash_write_str(setup_flash, form_fields[i].flashname, result);
                     }    
                 }
                 else
@@ -147,7 +147,7 @@ static esp_err_t form_get_handler(httpd_req_t *req)
         }
         if (success) {
             req->user_ctx = "<html><body><br><h2>Parameters saved, now reboot</h2><br></body></html>";
-            flash_commitchanges();
+            flash_commitchanges(setup_flash);
         }    
         else
             req->user_ctx = "<html><body><br><h2>Failed, try again.</h2><br></body></html>";

@@ -146,6 +146,7 @@ static int retry_num = 0;
 static float elpriceInfluence = 0.0;
 static char *program_version = ""; 
 static char appname[20];
+nvs_handle setup_flash;
 SemaphoreHandle_t mqttBuffMtx;
 
 
@@ -224,22 +225,22 @@ static void readPidSetupJson(cJSON *root)
 
     if (getJsonFloat(root, "max", &setup.max))
     {
-        flash_write_float("pidmax", setup.max);
+        flash_write_float(setup_flash, "pidmax", setup.max);
         reinit_needed = true;
     }
     if (getJsonFloat(root, "pidkp", &setup.kp))
     {
-        flash_write_float("pidkp", setup.kp);
+        flash_write_float(setup_flash, "pidkp", setup.kp);
         reinit_needed = true;
     }
     if (getJsonFloat(root, "pidki", &setup.ki))
     {
-        flash_write_float("pidki", setup.ki);
+        flash_write_float(setup_flash, "pidki", setup.ki);
         reinit_needed = true;
     }
     if (getJsonFloat(root, "pidkd", &setup.kd))
     {
-        flash_write_float("pidkd", setup.kd);
+        flash_write_float(setup_flash, "pidkd", setup.kd);
         reinit_needed = true;
     }
     if (reinit_needed) 
@@ -247,7 +248,7 @@ static void readPidSetupJson(cJSON *root)
         pidcontroller_adjust(&pidCtl, setup.max, setup.interval,setup.kp, setup.ki, setup.kd);
         ntc_sendcurrent(); // this causes pid recalculation
     }
-    flash_commitchanges();
+    flash_commitchanges(setup_flash);
 }
 
 static void sensorFriendlyName(cJSON *root)
@@ -260,8 +261,8 @@ static void sensorFriendlyName(cJSON *root)
     if (temperature_set_friendlyname(sensorname, friendlyname))
     {
         ESP_LOGD(TAG, "writing sensor %s, friendlyname %s to flash",sensorname, friendlyname);
-        flash_write_str(sensorname,friendlyname);
-        flash_commitchanges();
+        flash_write_str(setup_flash, sensorname,friendlyname);
+        flash_commitchanges(setup_flash);
     }
 }
 
@@ -362,11 +363,11 @@ static uint8_t handleJson(esp_mqtt_event_handle_t event, uint8_t *chipid)
         {
             if (getJsonInt(root, "interval", &setup.interval))
             {
-                flash_write("interval", setup.interval);
+                flash_write(setup_flash, "interval", setup.interval);
             }
             if (getJsonInt(root, "samples", &setup.samples))
             {
-                flash_write("samples", setup.samples);
+                flash_write(setup_flash, "samples", setup.samples);
             }
             ret |= SETUP_NTC;
         }
@@ -403,7 +404,7 @@ static uint8_t handleJson(esp_mqtt_event_handle_t event, uint8_t *chipid)
             int prevBrightness = setup.brightness;
             if (getJsonInt(root, "value", &setup.brightness))
             {
-                flash_write("brightness", setup.brightness);
+                flash_write(setup_flash, "brightness", setup.brightness);
                 display_brightness(setup.brightness);
                 if (prevBrightness == 0) refresh_display();
                 ret |= SETUP_DISPLAY;
@@ -415,12 +416,12 @@ static uint8_t handleJson(esp_mqtt_event_handle_t event, uint8_t *chipid)
             if (getJsonInt(root,"pwmlen", &setup.pwmlen))
             {
                 heater_reconfig(setup.pwmlen, HEATER_POWERLEVELS);
-                flash_write("pwmlen", setup.pwmlen);
+                flash_write(setup_flash, "pwmlen", setup.pwmlen);
             }
             if (getJsonFloat(root, "target", &setup.target))
             {
                 pidcontroller_target(&pidCtl, setup.target + elpriceInfluence);
-                flash_write_float("target", setup.target);
+                flash_write_float(setup_flash, "target", setup.target);
                 int tune = pidcontroller_tune(&pidCtl, ntc_get_temperature());
                 heater_setlevel(tune);
                 pidcontroller_send_tune(&pidCtl, tune, false);
@@ -428,11 +429,11 @@ static uint8_t handleJson(esp_mqtt_event_handle_t event, uint8_t *chipid)
             }
             if (getJsonFloat(root, "hiboost", &setup.hiboost))
             {
-                flash_write_float("hiboost", setup.hiboost);
+                flash_write_float(setup_flash, "hiboost", setup.hiboost);
             }
             if (getJsonFloat(root, "lodeduct", &setup.lodeduct))
             {
-                flash_write_float("lodeduct", setup.lodeduct);
+                flash_write_float(setup_flash, "lodeduct", setup.lodeduct);
             }
             ret |= SETUP_HEAT;
         }
@@ -810,14 +811,14 @@ struct netinfo *get_networkinfo()
     static struct netinfo ni;
     char *default_ssid = "XXXXXXXX";
 
-    ni.ssid = flash_read_str("ssid",default_ssid, 20);
+    ni.ssid = flash_read_str(setup_flash, "ssid",default_ssid, 20);
     if (!strcmp(ni.ssid,"XXXXXXXX"))
         return NULL;
 
-    ni.password    = flash_read_str("password","pass", 20);
-    ni.mqtt_server = flash_read_str("mqtt_server","test.mosquitto.org", 20);
-    ni.mqtt_port   = flash_read_str("mqtt_port","1883", 6);
-    ni.mqtt_prefix = flash_read_str("mqtt_prefix","home/esp", 20);
+    ni.password    = flash_read_str(setup_flash, "password","pass", 20);
+    ni.mqtt_server = flash_read_str(setup_flash, "mqtt_server","test.mosquitto.org", 20);
+    ni.mqtt_port   = flash_read_str(setup_flash, "mqtt_port","1883", 6);
+    ni.mqtt_prefix = flash_read_str(setup_flash, "mqtt_prefix","home/esp", 20);
     return &ni;
 }
 
@@ -869,7 +870,7 @@ void app_main(void)
     display_clear();
     display_show(88.88, 88.88);
     get_appname();
-    flash_open("storage");
+    setup_flash = flash_open("storage");
     comminfo = get_networkinfo();
 
     if (comminfo == NULL)
@@ -887,19 +888,19 @@ void app_main(void)
         evt_queue = xQueueCreate(10, sizeof(struct measurement));
 
 
-        setup.pwmlen       = flash_read("pwmlen", setup.pwmlen);
-        setup.interval     = flash_read("interval", setup.interval);
-        setup.brightness   = flash_read("brightness", setup.brightness);
+        setup.pwmlen       = flash_read(setup_flash, "pwmlen", setup.pwmlen);
+        setup.interval     = flash_read(setup_flash, "interval", setup.interval);
+        setup.brightness   = flash_read(setup_flash, "brightness", setup.brightness);
 
-        setup.max          = flash_read_float("pidmax", setup.max);
-        setup.kp           = flash_read_float("pidkp", setup.kp);
-        setup.ki           = flash_read_float("pidki", setup.ki);
-        setup.kd           = flash_read_float("pidkd", setup.kd);
+        setup.max          = flash_read_float(setup_flash, "pidmax", setup.max);
+        setup.kp           = flash_read_float(setup_flash, "pidkp", setup.kp);
+        setup.ki           = flash_read_float(setup_flash, "pidki", setup.ki);
+        setup.kd           = flash_read_float(setup_flash, "pidkd", setup.kd);
 
-        setup.samples      = flash_read("samples", setup.samples);
-        setup.target       = flash_read_float("target", setup.target);
-        setup.hiboost      = flash_read_float("hiboost", setup.hiboost);
-        setup.lodeduct     = flash_read_float("lodeduct", setup.lodeduct);
+        setup.samples      = flash_read(setup_flash, "samples", setup.samples);
+        setup.target       = flash_read_float(setup_flash, "target", setup.target);
+        setup.hiboost      = flash_read_float(setup_flash, "hiboost", setup.hiboost);
+        setup.lodeduct     = flash_read_float(setup_flash, "lodeduct", setup.lodeduct);
 
         int sensorcnt = temperature_init(TEMP_BUS, appname, chipid, 4);
         if (sensorcnt)
@@ -911,7 +912,7 @@ void app_main(void)
             {
                 sensoraddr   = temperature_getsensor(i);
                 if (sensoraddr == NULL) break;
-                friendlyname = flash_read_str(sensoraddr, sensoraddr, 20);
+                friendlyname = flash_read_str(setup_flash, sensoraddr, sensoraddr, 20);
                 if (strcmp(friendlyname, sensoraddr))
                 {
                     if (!temperature_set_friendlyname(sensoraddr, friendlyname))

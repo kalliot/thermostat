@@ -135,10 +135,10 @@ bool ntc_save_calibrations(void)
         ESP_LOGI(TAG,"Error: calibration maxtemp is lower than mintemp");
         return false;
     }
-    flash_write(calibr[CAL_MAX].rawname, calibr[CAL_MAX].raw);
-    flash_write(calibr[CAL_MIN].rawname, calibr[CAL_MIN].raw);
-    flash_write_float(calibr[CAL_MAX].tempname, calibr[CAL_MAX].temp);
-    flash_write_float(calibr[CAL_MIN].tempname, calibr[CAL_MIN].temp);
+    flash_write(setup_flash, calibr[CAL_MAX].rawname, calibr[CAL_MAX].raw);
+    flash_write(setup_flash, calibr[CAL_MIN].rawname, calibr[CAL_MIN].raw);
+    flash_write_float(setup_flash, calibr[CAL_MAX].tempname, calibr[CAL_MAX].temp);
+    flash_write_float(setup_flash, calibr[CAL_MIN].tempname, calibr[CAL_MIN].temp);
     queue_measurement(convert(ntc_read()));
     return true;
 }
@@ -247,10 +247,10 @@ bool ntc_init(uint8_t *chip, adc_oneshot_unit_handle_t adc_handle, int intervalM
         return false;
     }
     samplecnt = cnt;
-    calibr[CAL_MIN].raw   = flash_read(calibr[CAL_MIN].rawname,  calibr[CAL_MIN].raw);
-    calibr[CAL_MIN].temp  = flash_read_float(calibr[CAL_MIN].tempname, calibr[CAL_MIN].temp);
-    calibr[CAL_MAX].raw   = flash_read(calibr[CAL_MAX].rawname,  calibr[CAL_MAX].raw);
-    calibr[CAL_MAX].temp  = flash_read_float(calibr[CAL_MAX].tempname, calibr[CAL_MAX].temp);
+    calibr[CAL_MIN].raw   = flash_read(setup_flash, calibr[CAL_MIN].rawname,  calibr[CAL_MIN].raw);
+    calibr[CAL_MIN].temp  = flash_read_float(setup_flash, calibr[CAL_MIN].tempname, calibr[CAL_MIN].temp);
+    calibr[CAL_MAX].raw   = flash_read(setup_flash, calibr[CAL_MAX].rawname,  calibr[CAL_MAX].raw);
+    calibr[CAL_MAX].temp  = flash_read_float(setup_flash, calibr[CAL_MAX].tempname, calibr[CAL_MAX].temp);
 
     chipid = chip;
     adc_oneshot_chan_cfg_t config = {

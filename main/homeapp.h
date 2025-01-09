@@ -4,6 +4,7 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/queue.h"
 #include "freertos/semphr.h"
+#include "flashmem.h"
 
 enum meastype
 {
@@ -29,6 +30,7 @@ extern QueueHandle_t evt_queue;
 extern char jsondata[];
 extern uint16_t sendcnt;
 extern uint16_t sensorerrors;
+extern nvs_handle setup_flash;
 
 #define BLINK_GPIO         CONFIG_SENDING_GPIO
 #define SETUP_GPIO         CONFIG_SETUPLED_GPIO
