@@ -111,6 +111,38 @@ void flash_write(nvs_handle nvsh, char *name, uint16_t value)
     if (err != ESP_OK) ESP_LOGD(TAG,"failed to write %s",name);
 }
 
+uint32_t flash_read32(nvs_handle nvsh, char *name, uint32_t def)
+{
+    esp_err_t err;
+    uint32_t ret;
+
+    ESP_LOGD(TAG,"Reading %s from NVS", name);
+    err = nvs_get_u32(nvsh, name , &ret);
+    switch (err) {
+        case ESP_OK:
+            ESP_LOGI(TAG,"%s = %d", name, ret);
+        break;
+
+        case ESP_ERR_NVS_NOT_FOUND:
+            ESP_LOGI(TAG,"%s is not initialized yet!", name);
+            ret = def;
+        break;
+
+        default :
+            ESP_LOGD(TAG,"Error (%d) reading!", err);
+            ret = def;
+    }
+    return ret;
+}
+
+void flash_write32(nvs_handle nvsh, char *name, uint32_t value)
+{
+    esp_err_t err;
+
+    err = nvs_set_u32(nvsh, name, value);
+    if (err != ESP_OK) ESP_LOGD(TAG,"failed to write %s",name);
+}
+
 float flash_read_float(nvs_handle nvsh, char *name, float def)
 {
     esp_err_t err;

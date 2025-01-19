@@ -21,7 +21,10 @@ static char ldrTopic[64];
 static int sampleInterval = 1000;
 static uint8_t brightness;
 static uint8_t prev_brightness = 0;
+static int prev_rawvalue = 1;
 static SemaphoreHandle_t mutex;
+static int divider = 1;
+static int minrawdiff = 1;
 
 static const char *TAG = "ldrreader";
 
@@ -29,7 +32,7 @@ static const char *TAG = "ldrreader";
 static int convert(int raw)
 {
     if (raw == 0) return 0;
-    return raw / 273; 
+    return raw / divider;
 }
 
 static int ldr_read(void)
@@ -68,13 +71,17 @@ static void ldr_reader(void* arg)
     for(;;)
     {
         int raw = ldr_read();
+        int rawdiff = 1;
 
         if (xSemaphoreTake(mutex, (TickType_t) 1000) == pdTRUE)
         {
             brightness = convert(raw);
-            if (brightness != prev_brightness)
+            rawdiff = abs(prev_rawvalue - raw);
+            //ESP_LOGI(TAG, "rawdiff = %d, minrawdiff = %d", rawdiff, minrawdiff);
+            if (rawdiff > minrawdiff && brightness != prev_brightness)
             {
                 prev_brightness = brightness;
+                prev_rawvalue = raw;
                 queue_measurement(brightness);
             }   
             xSemaphoreGive(mutex); 
@@ -107,7 +114,7 @@ bool ldr_publish(char *prefix, struct measurement *data, esp_mqtt_client_handle_
         retain = 0;
     }
 
-    static char *datafmt = "{\"dev\":\"%x%x%x\",\"sensor\":\"ntc\",\"id\":\"brightness\",\"value\":%d,\"ts\":%jd}";
+    static char *datafmt = "{\"dev\":\"%x%x%x\",\"sensor\":\"ldr\",\"id\":\"brightness\",\"value\":%d,\"ts\":%jd}";
     sprintf(ldrTopic,"%s/thermostat/%x%x%x/parameters/brightness", prefix, chipid[3], chipid[4], chipid[5]);
 
     sprintf(jsondata, datafmt,
@@ -122,7 +129,7 @@ bool ldr_publish(char *prefix, struct measurement *data, esp_mqtt_client_handle_
 
 
 
-bool ldr_init(uint8_t *chip, adc_oneshot_unit_handle_t adc_handle, int intervalMs)
+bool ldr_init(uint8_t *chip, adc_oneshot_unit_handle_t adc_handle, int intervalMs, int resolution)
 {
     mutex = xSemaphoreCreateMutex();
     if (mutex == NULL)
@@ -139,6 +146,8 @@ bool ldr_init(uint8_t *chip, adc_oneshot_unit_handle_t adc_handle, int intervalM
     adc1_handle = adc_handle;
     adc_oneshot_config_channel(adc_handle, ADC_CHANNEL_3, &config);
     // mutex is here not needed, we are not yet threading.
+    divider = 4096 / resolution;
+    minrawdiff = divider / 10;
     brightness = convert(ldr_read());
     ESP_LOGI(TAG,"ldr_init, first brightness read is %f", brightness);
     sampleInterval = intervalMs;

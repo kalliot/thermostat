@@ -9,7 +9,7 @@
 extern bool  ldr_publish(char *prefix, struct measurement *data, esp_mqtt_client_handle_t client);
 extern void  ldr_sendcurrent(void);
 extern float ldr_get_brightness(void);
-extern bool  ldr_init(uint8_t *chip, adc_oneshot_unit_handle_t adc_handle, int intervalMs, int cnt);
+extern bool  ldr_init(uint8_t *chip, adc_oneshot_unit_handle_t adc_handle, int intervalMs, int resolution);
 extern void  ldr_close(void);
 
 

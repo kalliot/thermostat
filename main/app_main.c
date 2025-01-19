@@ -60,6 +60,7 @@
 #define SETUP_CALIBR  16
 #define SETUP_NAMES   32
 #define SETUP_TARGET  64
+#define SETUP_BOOST  128
 
 
 #if CONFIG_EXAMPLE_WIFI_SCAN_METHOD_FAST
@@ -94,6 +95,7 @@ struct {
     // ntc
     int interval;
     int samples;
+    int tzoffset;
 
     // pidcontroller
     float max;
@@ -107,9 +109,13 @@ struct {
     float hiboost;
     float lodeduct;
 
-} setup = { 15, 10,
+    // boosthours, as flags
+    uint32_t wkdhours;
+    uint32_t wendhours;
+} setup = { 15, 10, 7200,
             35, 5 , 1, 3,
-            15, 24, 1, 1};
+            15, 24, 1, 1,
+            0, 0};
 
 
 PID pidCtl = {
@@ -141,6 +147,7 @@ static char setupTopic[64];
 static char setSetupTopic[64];
 static char elpriceTopic[64];
 static char otaUpdateTopic[64];
+static char tzoffsetTopic[32];
 static int retry_num = 0;
 static float elpriceInfluence = 0.0;
 static char *program_version = ""; 
@@ -214,7 +221,40 @@ static bool getJsonFloat(cJSON *js, char *name, float *val)
     return ret;
 }
 
+bool isflag_active(uint32_t flags, int pos)
+{
+    return (flags & (1 << pos));
+}
 
+
+int chkHourlyBoost(void)
+{
+    time_t now;
+    struct tm current_time;
+
+    time(&now);
+    if (now > MIN_EPOCH)
+    {
+        now += setup.tzoffset;
+        localtime_r(&now, &current_time);
+        uint32_t flags;
+        if (current_time.tm_wday == 0 || current_time.tm_wday == 6)
+        {
+            flags = setup.wendhours;
+        }
+        else
+        {
+            flags = setup.wkdhours;
+        }
+        ESP_LOGI(TAG,"weekday is %d",current_time.tm_wday);
+        if (isflag_active(flags, current_time.tm_hour))
+        {
+            ESP_LOGI(TAG,"hourlyboost is active");
+            return 1;
+        }
+    }
+    return 0;
+}
 
 
 // pidcontroller config
@@ -296,6 +336,7 @@ bool checkPriceInfluence(cJSON *root)
     float newInfluence = 0.0;
     char *pricestate = getJsonStr(root,"pricestate");
     bool ret = false;
+    int hourlyboost = chkHourlyBoost();
 
     if (!strcmp(pricestate,"low"))
     {
@@ -311,21 +352,58 @@ bool checkPriceInfluence(cJSON *root)
     {
         ESP_LOGI(TAG,"normal temperature is on");
     }
-    if (newInfluence != elpriceInfluence)
+    if (newInfluence != elpriceInfluence + hourlyboost)
     {
         elpriceInfluence = newInfluence;
-        ESP_LOGI(TAG,"changing target to %f", setup.target + elpriceInfluence);
-        pidcontroller_target(&pidCtl, setup.target + elpriceInfluence);
+        ESP_LOGI(TAG,"changing target to %f", setup.target + elpriceInfluence + hourlyboost);
+        pidcontroller_target(&pidCtl, setup.target + elpriceInfluence + hourlyboost);
         ret = true;
     }
     return ret;
 }
 
+void flags2str(uint32_t flags, char *str)
+{
+    for (int i=0; i < 24; i++)
+    {
+        if (flags & (1 << i))
+        {
+            str[i] = '1';
+        }
+        else
+        {
+            str[i] = '0';
+        }
+    }
+    str[24]=0;
+}
+
+uint32_t str2flags(char *str)
+{
+    uint32_t flags = 0;
+    int bitlen = strlen(str);
+
+    if (bitlen != 24)
+    {
+        ESP_LOGI(TAG, "wrong size of bitstr %d\n", bitlen);
+    }
+    for (int i=0; i < 24; i++)
+    {
+        if (str[i]=='1')
+        {
+            flags |= 1 << i;
+        }
+    }
+    ESP_LOGI(TAG,"flags = %d\n",flags);
+    return flags;
+}
 
 /*
 ** Setup messages
 {"dev":"5bdddc","id":"calibratehigh","temperature":25.38}                           ntc should be in this temperature
 {"dev":"5bdddc","id":"calibratelow","temperature":20.02}                            ntc should be in this temperature
+{"dev":"5bdddc","id":"workdayboost","hours":"00001110000000011000000","change":1.0}   all the 0-23 hours, 1 means higher temp if change is positive
+{"dev":"5bdddc","id":"weekendboost","hours":"00000111000000001100000","change":1.2}   all the 0-23 hours, 1 means higher temp if change is positive
 {"dev":"5bdddc","id":"calibratesave"}                                               commit the calibrations
 {"dev":"5bdddc","id":"ntcreader","interval":15, "samples":10}                       ntc reader averages the temperature in every 15 seconds, from samples amount.
 {"dev":"5bdddc","id":"pidsetup","max":35,"pidkp":5.00,"pidki":1.0,"pidkd":3.0}
@@ -337,6 +415,7 @@ static uint8_t handleJson(esp_mqtt_event_handle_t event, uint8_t *chipid)
     cJSON *root = cJSON_Parse(event->data);
     uint8_t ret = 0;
     char id[20];
+    char flagstr[33];
     time_t now;
 
     time(&now);
@@ -349,6 +428,32 @@ static uint8_t handleJson(esp_mqtt_event_handle_t event, uint8_t *chipid)
             ESP_LOGI(TAG,"got pid setup");
             readPidSetupJson(root);
             ret |= SETUP_PID;
+        }
+        if (!strcmp(id,"workdayboost"))
+        {
+            strcpy(flagstr,getJsonStr(root,"hours"));
+            setup.wkdhours = str2flags(flagstr);
+            flash_write32(setup_flash, "wkdhrs", setup.wkdhours);
+            float currTarget = setup.target + elpriceInfluence + chkHourlyBoost();
+            pidcontroller_target(&pidCtl, currTarget);
+            sendTargetInfo(event->client, chipid, currTarget, now);
+            int tune = pidcontroller_tune(&pidCtl, ntc_get_temperature());
+            heater_setlevel(tune);
+            pidcontroller_send_tune(&pidCtl, tune, false);
+            ret |= SETUP_BOOST;
+        }
+        if (!strcmp(id,"weekendboost"))
+        {
+            strcpy(flagstr,getJsonStr(root,"hours"));
+            setup.wendhours = str2flags(flagstr);
+            flash_write32(setup_flash, "wendhrs", setup.wendhours);
+            float currTarget = setup.target + elpriceInfluence + chkHourlyBoost();
+            sendTargetInfo(event->client, chipid, currTarget, now);
+            pidcontroller_target(&pidCtl, currTarget);
+            int tune = pidcontroller_tune(&pidCtl, ntc_get_temperature());
+            heater_setlevel(tune);
+            pidcontroller_send_tune(&pidCtl, tune, false);
+            ret |= SETUP_BOOST;
         }
         if (!strcmp(id,"ntcreader"))
         {
@@ -390,6 +495,11 @@ static uint8_t handleJson(esp_mqtt_event_handle_t event, uint8_t *chipid)
         {
             ntc_save_calibrations();
         }
+        else if (!strcmp(id,"tzoffset"))
+        {
+            getJsonInt(root,"value", &setup.tzoffset);
+            ESP_LOGI(TAG,"got tz offset %d", setup.tzoffset);
+        }
         else if (!strcmp(id,"heatsetup"))
         {
             ESP_LOGI(TAG,"got heatsetup");
@@ -400,7 +510,7 @@ static uint8_t handleJson(esp_mqtt_event_handle_t event, uint8_t *chipid)
             }
             if (getJsonFloat(root, "target", &setup.target))
             {
-                pidcontroller_target(&pidCtl, setup.target + elpriceInfluence);
+                pidcontroller_target(&pidCtl, setup.target + elpriceInfluence + chkHourlyBoost());
                 flash_write_float(setup_flash, "target", setup.target);
                 int tune = pidcontroller_tune(&pidCtl, ntc_get_temperature());
                 heater_setlevel(tune);
@@ -430,7 +540,8 @@ static uint8_t handleJson(esp_mqtt_event_handle_t event, uint8_t *chipid)
             if (!memcmp(topicpostfix,"current",7))
             {
                 checkPriceInfluence(root);
-                sendTargetInfo(event->client, chipid, setup.target + elpriceInfluence, now);
+                sendTargetInfo(event->client, chipid, setup.target + elpriceInfluence + chkHourlyBoost(), now);
+                pidcontroller_target(&pidCtl, setup.target + elpriceInfluence + chkHourlyBoost());
             }
         }
         else if (!strcmp(id,"otaupdate"))
@@ -485,6 +596,9 @@ static void mqtt_event_handler(void *handler_args, esp_event_base_t base, int32_
 
             msg_id = esp_mqtt_client_subscribe(client, otaUpdateTopic , 0);
             ESP_LOGI(TAG, "sent subscribe %s successful, msg_id=%d", otaUpdateTopic, msg_id);
+
+            msg_id = esp_mqtt_client_subscribe(client, tzoffsetTopic , 0);
+            ESP_LOGI(TAG, "sent subscribe %s successful, msg_id=%d", tzoffsetTopic, msg_id);
 
             gpio_set_level(MQTTSTATUS_GPIO, false);
             device_sendstatus(client, comminfo->mqtt_prefix, appname, (uint8_t *) handler_args);
@@ -597,17 +711,22 @@ static char *mkSetupTopic(char *item, char *buff, uint8_t *chipid, int id)
     return buff;
 }
 
-
-static void brightness_publish(esp_mqtt_client_handle_t client, uint8_t *chipid, int brightness)
+static void show_clock(void)
 {
-    char tmpTopic[64];
+    time_t now;
+    struct tm current_time;
+    char buff[6];
 
-    sprintf(jsondata, "{\"dev\":\"%x%x%x\",\"id\":\"brightness\",\"value\":%d}",
-                chipid[3],chipid[4],chipid[5],
-                brightness);
-    esp_mqtt_client_publish(client, mkSetupTopic("brightness", tmpTopic, chipid,-1), jsondata , 0, 0, 1);
-    statistics_getptr()->sendcnt++;
+    time(&now);
+    if (now > MIN_EPOCH)
+    {
+        now += setup.tzoffset;
+        localtime_r(&now, &current_time);
+        sprintf(buff,"%02d:%02d", current_time.tm_hour, current_time.tm_min);
+        ESP_LOGI(TAG,"localtime is %s", buff);
+    }
 }
+
 
 
 // {"dev":"5bdddc","id":"heatsetup","pwmlen":15,"target":25.50,"hiboost":1,"lodeduct":1}
@@ -638,6 +757,26 @@ static void sendSetup(esp_mqtt_client_handle_t client, uint8_t *chipid, uint8_t 
         esp_mqtt_client_publish(client, mkSetupTopic("ntc",tmpTopic, chipid,-1), jsondata , 0, 0, 1);
         flags &= ~SETUP_NTC;
         statistics_getptr()->sendcnt++;
+    }
+
+    if (flags & SETUP_BOOST)
+    {
+        char strflags[25];
+
+        flags2str(setup.wkdhours,strflags);
+        sprintf(jsondata, "{\"dev\":\"%x%x%x\",\"id\":\"workdayboost\",\"hours\":\"%s\",\"change\":%.2f}",
+                    chipid[3],chipid[4],chipid[5],
+                    strflags, 1.0);
+        esp_mqtt_client_publish(client, mkSetupTopic("workdayboost",tmpTopic, chipid,-1), jsondata , 0, 0, 1);
+
+        flags2str(setup.wendhours,strflags);
+        sprintf(jsondata, "{\"dev\":\"%x%x%x\",\"id\":\"weekendboost\",\"hours\":\"%s\",\"change\":%.2f}",
+                    chipid[3],chipid[4],chipid[5],
+                    strflags, 1.0);
+        esp_mqtt_client_publish(client, mkSetupTopic("weekendboost",tmpTopic, chipid,-1), jsondata , 0, 0, 1);
+
+        flags &= ~SETUP_BOOST;
+        statistics_getptr()->sendcnt += 2;
     }
 
     if (flags & SETUP_HEAT)
@@ -701,7 +840,6 @@ static void sendSetup(esp_mqtt_client_handle_t client, uint8_t *chipid, uint8_t 
         sendTargetInfo(client, chipid, setup.target + elpriceInfluence, now);
         flags &= ~SETUP_TARGET;
     }
-
     gpio_set_level(BLINK_GPIO, false);
 }
 
@@ -890,6 +1028,10 @@ void app_main(void)
         setup.hiboost      = flash_read_float(setup_flash, "hiboost", setup.hiboost);
         setup.lodeduct     = flash_read_float(setup_flash, "lodeduct", setup.lodeduct);
 
+        setup.wkdhours     = flash_read32(setup_flash, "wkdhrs", setup.wkdhours);
+        setup.wendhours    = flash_read32(setup_flash, "wendhrs", setup.wendhours);
+
+
         int sensorcnt = temperature_init(TEMP_BUS, appname, chipid, 4);
         if (sensorcnt)
         {
@@ -924,11 +1066,11 @@ void app_main(void)
             else
                 vTaskDelay(1000 / portTICK_PERIOD_MS);
         }    
-        ldr_init(chipid, adc_handle, 1000, setup.samples);
+        ldr_init(chipid, adc_handle, 1000, 15); // display has 15 brightness values
         program_version = ota_init(comminfo->mqtt_prefix, appname, chipid);
         heater_init(setup.pwmlen, HEATER_POWERLEVELS);
         pidcontroller_init(&pidCtl, comminfo->mqtt_prefix, chipid, setup.max, HEATER_POWERLEVELS-1, setup.interval, setup.kp, setup.ki, setup.kd);
-        pidcontroller_target(&pidCtl, setup.target + elpriceInfluence);
+        pidcontroller_target(&pidCtl, setup.target + elpriceInfluence + chkHourlyBoost());
         esp_mqtt_client_handle_t client = mqtt_app_start(chipid);
 
         ESP_LOGI(TAG, "[APP] All init done, app_main, last line.");
@@ -944,6 +1086,7 @@ void app_main(void)
         sprintf(otaUpdateTopic,"%s/%s/%x%x%x/otaupdate",
             comminfo->mqtt_prefix, appname, chipid[3],chipid[4],chipid[5]);
         sprintf(elpriceTopic,"%s/elprice/#", comminfo->mqtt_prefix);
+        sprintf(tzoffsetTopic,"%s/tzoffset", comminfo->mqtt_prefix);
 
         prevStatsTs = 0;
 
@@ -957,6 +1100,7 @@ void app_main(void)
         heater_setlevel(tune);
 
         gpio_set_level(SETUP_GPIO, false);
+
         while (1)
         {
             struct measurement meas;
@@ -973,9 +1117,13 @@ void app_main(void)
                 if (statistics_getptr()->started < MIN_EPOCH)
                 {
                     statistics_getptr()->started = now;
+                    float currTarget = setup.target + elpriceInfluence + chkHourlyBoost();
+                    pidcontroller_target(&pidCtl, currTarget);
+                    sendTargetInfo(client, chipid, currTarget, now);
                 }
                 if (now - prevStatsTs >= STATISTICS_INTERVAL)
                 {
+                    ESP_LOGI(TAG,"%d seconds since last statistics is gone", now - prevStatsTs);
                     if (isConnected)
                     {
                         statistics_send(client);
@@ -1001,8 +1149,8 @@ void app_main(void)
                         ldr_publish(comminfo->mqtt_prefix, &meas, client);
                         display_brightness(meas.data.count);
                         if (prevBrightness == 0) display_show(ntc, ds);
-                        brightness_publish(client, chipid, meas.data.count);
                         prevBrightness = meas.data.count;
+                        show_clock();
                     break;
 
                     case NTC:
