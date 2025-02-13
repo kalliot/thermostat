@@ -112,10 +112,14 @@ struct {
     // boosthours, as flags
     uint32_t wkdhours;
     uint32_t wendhours;
+
+    // alteration may be positive or negative
+    float wkd_alteration;
+    float wend_alteration;
 } setup = { 15, 10, 7200,
             35, 5 , 1, 3,
             15, 24, 1, 1,
-            0, 0};
+            0, 0, 1.0, 1.0};
 
 
 PID pidCtl = {
@@ -227,7 +231,7 @@ bool isflag_active(uint32_t flags, int pos)
 }
 
 
-int chkHourlyBoost(void)
+float chkHourlyBoost(void)
 {
     time_t now;
     struct tm current_time;
@@ -237,23 +241,22 @@ int chkHourlyBoost(void)
     {
         now += setup.tzoffset;
         localtime_r(&now, &current_time);
-        uint32_t flags;
         if (current_time.tm_wday == 0 || current_time.tm_wday == 6)
         {
-            flags = setup.wendhours;
+            if (isflag_active(setup.wendhours, current_time.tm_hour))
+            {
+                return setup.wend_alteration;
+            }
         }
         else
         {
-            flags = setup.wkdhours;
-        }
-        ESP_LOGI(TAG,"weekday is %d",current_time.tm_wday);
-        if (isflag_active(flags, current_time.tm_hour))
-        {
-            ESP_LOGI(TAG,"hourlyboost is active");
-            return 1;
+            if (isflag_active(setup.wkdhours, current_time.tm_hour))
+            {
+                return setup.wkd_alteration;
+            }
         }
     }
-    return 0;
+    return 0.0;
 }
 
 
@@ -336,7 +339,7 @@ bool checkPriceInfluence(cJSON *root)
     float newInfluence = 0.0;
     char *pricestate = getJsonStr(root,"pricestate");
     bool ret = false;
-    int hourlyboost = chkHourlyBoost();
+    float hourlyboost = chkHourlyBoost();
 
     if (!strcmp(pricestate,"low"))
     {
@@ -434,9 +437,14 @@ static uint8_t handleJson(esp_mqtt_event_handle_t event, uint8_t *chipid)
             strcpy(flagstr,getJsonStr(root,"hours"));
             setup.wkdhours = str2flags(flagstr);
             flash_write32(setup_flash, "wkdhrs", setup.wkdhours);
+            if (getJsonFloat(root, "change", &setup.wkd_alteration))
+            {
+                flash_write_float(setup_flash, "wkdalt", setup.wkd_alteration);
+            }
+            // tee seuraavasta funkkari
             float currTarget = setup.target + elpriceInfluence + chkHourlyBoost();
-            pidcontroller_target(&pidCtl, currTarget);
             sendTargetInfo(event->client, chipid, currTarget, now);
+            pidcontroller_target(&pidCtl, currTarget);
             int tune = pidcontroller_tune(&pidCtl, ntc_get_temperature());
             heater_setlevel(tune);
             pidcontroller_send_tune(&pidCtl, tune, false);
@@ -447,6 +455,11 @@ static uint8_t handleJson(esp_mqtt_event_handle_t event, uint8_t *chipid)
             strcpy(flagstr,getJsonStr(root,"hours"));
             setup.wendhours = str2flags(flagstr);
             flash_write32(setup_flash, "wendhrs", setup.wendhours);
+            if (getJsonFloat(root, "change", &setup.wend_alteration))
+            {
+                flash_write_float(setup_flash, "wendalt", setup.wend_alteration);
+            }
+            // tee seuraavasta funkkari
             float currTarget = setup.target + elpriceInfluence + chkHourlyBoost();
             sendTargetInfo(event->client, chipid, currTarget, now);
             pidcontroller_target(&pidCtl, currTarget);
@@ -766,13 +779,13 @@ static void sendSetup(esp_mqtt_client_handle_t client, uint8_t *chipid, uint8_t 
         flags2str(setup.wkdhours,strflags);
         sprintf(jsondata, "{\"dev\":\"%x%x%x\",\"id\":\"workdayboost\",\"hours\":\"%s\",\"change\":%.2f}",
                     chipid[3],chipid[4],chipid[5],
-                    strflags, 1.0);
+                    strflags, setup.wkd_alteration);
         esp_mqtt_client_publish(client, mkSetupTopic("workdayboost",tmpTopic, chipid,-1), jsondata , 0, 0, 1);
 
         flags2str(setup.wendhours,strflags);
         sprintf(jsondata, "{\"dev\":\"%x%x%x\",\"id\":\"weekendboost\",\"hours\":\"%s\",\"change\":%.2f}",
                     chipid[3],chipid[4],chipid[5],
-                    strflags, 1.0);
+                    strflags, setup.wend_alteration);
         esp_mqtt_client_publish(client, mkSetupTopic("weekendboost",tmpTopic, chipid,-1), jsondata , 0, 0, 1);
 
         flags &= ~SETUP_BOOST;
@@ -1030,6 +1043,8 @@ void app_main(void)
 
         setup.wkdhours     = flash_read32(setup_flash, "wkdhrs", setup.wkdhours);
         setup.wendhours    = flash_read32(setup_flash, "wendhrs", setup.wendhours);
+        setup.wkd_alteration = flash_read_float(setup_flash, "wkdalt", setup.wkd_alteration);
+        setup.wend_alteration= flash_read_float(setup_flash, "wendalt", setup.wend_alteration);
 
 
         int sensorcnt = temperature_init(TEMP_BUS, appname, chipid, 4);
