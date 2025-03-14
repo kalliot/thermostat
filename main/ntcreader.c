@@ -26,6 +26,7 @@ static float prevTemp = 0.0;
 static SemaphoreHandle_t mutex;
 
 static const char *TAG = "ntcreader";
+static int errState = 0;
 
 enum {
     CAL_MIN,
@@ -62,12 +63,13 @@ static int ntc_read(void)
     return adc_raw;
 }
 
-static void queue_measurement(float tempval)
+static void queue_measurement(float tempval, int err)
 {
     struct measurement meas;
     meas.id = NTC;
     meas.gpio = 36;
     meas.data.temperature = tempval;
+    meas.err = err;
     xQueueSend(evt_queue, &meas, 0);
 }
 
@@ -139,7 +141,7 @@ bool ntc_save_calibrations(void)
     flash_write(setup_flash, calibr[CAL_MIN].rawname, calibr[CAL_MIN].raw);
     flash_write_float(setup_flash, calibr[CAL_MAX].tempname, calibr[CAL_MAX].temp);
     flash_write_float(setup_flash, calibr[CAL_MIN].tempname, calibr[CAL_MIN].temp);
-    queue_measurement(convert(ntc_read()));
+    queue_measurement(convert(ntc_read()),0);
     return true;
 }
 
@@ -162,7 +164,7 @@ void ntc_sendcurrent(void)
 {
     if (xSemaphoreTake(mutex, (TickType_t ) 1000) == pdTRUE)
     {
-        queue_measurement(temperature);
+        queue_measurement(temperature, errState);
         xSemaphoreGive(mutex);
     }
 }
@@ -172,18 +174,21 @@ static void ntc_reader(void* arg)
 {
     int cnt = 0;
     int sum = 0;
-    int minraw =  0xffff; // dont count on smallest
-    int maxraw = -0xffff; // biggest samples
+    int minraw =  0xfff; // dont count on smallest
+    int maxraw = -0xfff; // and biggest samples
 
     for(;;)
     {
         int raw = ntc_read();
 
         sum += raw;
+        errState = 0; // check which value we have here, if ntc is missing
+        if (raw == 0xfff || raw == -0xfff) errState = 1;
         if (raw < minraw) minraw = raw;
         if (raw > maxraw) maxraw = raw;
         if (++cnt == samplecnt)
         {
+            // dont count on min and max values
             int avg = (sum - minraw - maxraw) / (samplecnt - 2);
             cnt = 0;
             sum = 0;
@@ -198,12 +203,12 @@ static void ntc_reader(void* arg)
                 if (diff >= 0.04)
                 {
                     prevTemp = temperature;
-                    queue_measurement(temperature);
+                    queue_measurement(temperature, errState);
                 }
                 xSemaphoreGive(mutex);
             }
-            minraw =  0xffff;
-            maxraw = -0xffff;
+            minraw =  0xfff;
+            maxraw = -0xfff;
         }
         vTaskDelay(sampleInterval / portTICK_PERIOD_MS);
     }
@@ -224,13 +229,13 @@ bool ntc_send(char *prefix, struct measurement *data, esp_mqtt_client_handle_t c
         retain = 0;
     }
 
-    static char *datafmt = "{\"dev\":\"%x%x%x\",\"sensor\":\"ntc\",\"id\":\"temperature\",\"value\":%.02f,\"ts\":%jd,\"unit\":\"C\"}";
+    static char *datafmt = "{\"dev\":\"%x%x%x\",\"sensor\":\"ntc\",\"id\":\"temperature\",\"value\":%.02f,\"ts\":%jd,\"err\":%d}";
     sprintf(temperatureTopic,"%s/thermostat/%x%x%x/parameters/temperature/ntc", prefix, chipid[3], chipid[4], chipid[5]);
 
     sprintf(jsondata, datafmt,
                 chipid[3],chipid[4],chipid[5],
                 data->data.temperature,
-                now);
+                now, errState);
     esp_mqtt_client_publish(client, temperatureTopic, jsondata , 0, 0, retain);
     statistics_getptr()->sendcnt++;
     gpio_set_level(BLINK_GPIO, false);

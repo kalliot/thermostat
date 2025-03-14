@@ -19,6 +19,7 @@ enum meastype
 struct measurement {
     enum meastype id;
     int gpio;
+    int err;
     union {
         int count;
         bool state;

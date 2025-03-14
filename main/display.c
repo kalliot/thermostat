@@ -56,13 +56,13 @@ void display_text(char *t)
     if (brightness) max7219_draw_text_7seg(&dev, 0, t);    
 }
 
-void display_show(float f1, float f2)
+void display_show(int f1, float f2)
 {
     char buff[6];
 
     if (brightness)
     {
-        sprintf(buff,"%02.02f",f1);
+        sprintf(buff,"%02d  ",f1);
         max7219_draw_text_7seg(&dev, 4, buff);    
         sprintf(buff,"%02.02f",f2);
         max7219_draw_text_7seg(&dev, 0, buff);

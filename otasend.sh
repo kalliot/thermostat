@@ -14,12 +14,12 @@ cat sdkconfig | grep CONFIG_APP_PROJECT_VER > vernum.tmp
 echo $CONFIG_APP_PROJECT_VER
 FNAME="thermostat_$CONFIG_APP_PROJECT_VER"
 echo $FNAME
-message='{"dev":"5bdddc","id":"otaupdate","file":'\"${FNAME}\"'}'
+message='{"id":"otafileschanged","name":'\"${FNAME}\"'}'
 echo $message
 sftp pi@192.168.101.233 << EOF
 cd srv/ota
 put build/thermostat.bin $FNAME
 EOF
 # mqtt message is a signal for the running esp prog, to start ota update.
-mosquitto_pub -h 192.168.101.231 -t home/kallio/thermostat/5bdddc/otaupdate -m $message
+mosquitto_pub -h 192.168.101.231 -t 'home/kallio/ota/fileschanged' -m $message
 echo 'DONE'

@@ -1,4 +1,6 @@
 v 0.02 - started to refactor some setup sets. Following better for mqtt connection state.
 v 0.03 - found a bug in temperature.c ( dallas sensor using code)
 v 0.04 - pidcontroller rewrite.
-
+v 0.17 - added errortext to otastatus message.
+v 0.29 - workday and weekend boosts. Extra expensive electricity price
+        temperature degrade.

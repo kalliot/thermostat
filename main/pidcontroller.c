@@ -113,6 +113,7 @@ int pidcontroller_tune(PID *p, float measurement)
     }
     p->prevValue = measurement;
     p->prevMeasTs = now;
+    p->tuneValue = tuneval;
     return tuneval;
 }
 
