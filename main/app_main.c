@@ -1009,7 +1009,7 @@ static void get_appname(void)
 void app_main(void)
 {
     uint8_t chipid[8];
-    time_t now, prevStatsTs;
+    time_t now, prevStatsTs, last_ntc_publish = 0;
     esp_efuse_mac_get_default(chipid);
     adc_oneshot_unit_handle_t adc_handle;
     int prevBrightness = 0;
@@ -1170,9 +1170,10 @@ void app_main(void)
 
             if (now > MIN_EPOCH)
             {
-                if (statistics_getptr()->started < MIN_EPOCH)
+                if (statistics_getptr()->started < MIN_EPOCH) // we have just got the ntc time
                 {
                     statistics_getptr()->started = now;
+                    last_ntc_publish = now;
                 }
                 if (now - prevStatsTs >= STATISTICS_INTERVAL)
                 {
@@ -1182,6 +1183,11 @@ void app_main(void)
                         statistics_send(client);
                         prevStatsTs = now;
                     }
+                }
+                if ((now - last_ntc_publish) >= 4 * setup.interval)
+                {
+                    ntc_sendcurrent();
+                    last_ntc_publish = now;
                 }
             }
 
@@ -1241,7 +1247,6 @@ void app_main(void)
             else
             { 
                 ESP_LOGI(TAG,"timeout");
-                ntc_sendcurrent();
             }
         }
     }
