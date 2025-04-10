@@ -1009,7 +1009,7 @@ static void get_appname(void)
 void app_main(void)
 {
     uint8_t chipid[8];
-    time_t now, prevStatsTs, last_ntc_publish = 0;
+    time_t now, prevStatsTs;
     esp_efuse_mac_get_default(chipid);
     adc_oneshot_unit_handle_t adc_handle;
     int prevBrightness = 0;
@@ -1151,12 +1151,13 @@ void app_main(void)
         ESP_LOGI(TAG,"gpios: mqtt=%d wlan=%d", MQTTSTATUS_GPIO, WLANSTATUS_GPIO);
 
         float ntc = ntc_get_temperature();
+        float internalTemp = 10.0;
         tune = pidcontroller_tune(&pidCtl, ntc);
         heater_setlevel(tune);
         display_show(tune, ntc);
 
         gpio_set_level(SETUP_GPIO, false);
-
+        throttle_setup(30.0, 10);
         while (1)
         {
             struct measurement meas;
@@ -1170,10 +1171,9 @@ void app_main(void)
 
             if (now > MIN_EPOCH)
             {
-                if (statistics_getptr()->started < MIN_EPOCH) // we have just got the ntc time
+                if (statistics_getptr()->started < MIN_EPOCH)
                 {
                     statistics_getptr()->started = now;
-                    last_ntc_publish = now;
                 }
                 if (now - prevStatsTs >= STATISTICS_INTERVAL)
                 {
@@ -1183,11 +1183,6 @@ void app_main(void)
                         statistics_send(client);
                         prevStatsTs = now;
                     }
-                }
-                if ((now - last_ntc_publish) >= 4 * setup.interval)
-                {
-                    ntc_sendcurrent();
-                    last_ntc_publish = now;
                 }
             }
 
@@ -1221,6 +1216,7 @@ void app_main(void)
                         ntc = meas.data.temperature;
                         if (isConnected) ntc_send(comminfo->mqtt_prefix, &meas, client);
                         tune = pidcontroller_tune(&pidCtl, ntc);
+                        tune = throttle_check(internalTemp, tune);
                         heater_setlevel(tune);
                         display_show(tune, ntc);
                         pidcontroller_send_tune(&pidCtl, tune, false);
@@ -1229,7 +1225,13 @@ void app_main(void)
 
                     case TEMPERATURE:
                         healthyflags |= HEALTHYFLAGS_TEMP;
+                        internalTemp = meas.data.temperature;
                         if (isConnected) temperature_send(comminfo->mqtt_prefix, &meas, client);
+                        tune = throttle_check(internalTemp, pidCtl.tuneValue);
+                        heater_setlevel(tune);
+                        display_show(tune, ntc);
+                        pidcontroller_send_tune(&pidCtl, tune, false);
+                        ESP_LOGI(TAG,"--> tune=%d", tune);
                     break;
 
                     case HEATER:
@@ -1247,6 +1249,7 @@ void app_main(void)
             else
             { 
                 ESP_LOGI(TAG,"timeout");
+                ntc_sendcurrent();
             }
         }
     }
