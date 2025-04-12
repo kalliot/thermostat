@@ -141,6 +141,7 @@ bool ntc_save_calibrations(void)
     flash_write(setup_flash, calibr[CAL_MIN].rawname, calibr[CAL_MIN].raw);
     flash_write_float(setup_flash, calibr[CAL_MAX].tempname, calibr[CAL_MAX].temp);
     flash_write_float(setup_flash, calibr[CAL_MIN].tempname, calibr[CAL_MIN].temp);
+    flash_commitchanges(setup_flash);
     queue_measurement(convert(ntc_read()),0);
     return true;
 }
@@ -176,10 +177,12 @@ static void ntc_reader(void* arg)
     int sum = 0;
     int minraw =  0xfff; // dont count on smallest
     int maxraw = -0xfff; // and biggest samples
+    int raw = ntc_read();
+    temperature = convert(raw);
 
     for(;;)
     {
-        int raw = ntc_read();
+        raw = ntc_read();
 
         sum += raw;
         errState = 0; // check which value we have here, if ntc is missing
@@ -195,7 +198,7 @@ static void ntc_reader(void* arg)
 
             if (xSemaphoreTake(mutex, (TickType_t) 1000) == pdTRUE)
             {
-                lastRaw = avg; // lastraw is needed for calibraions;
+                lastRaw = avg; // lastraw is needed for calibrations;
                 temperature = convert(avg);
                 float diff = fabs(prevTemp - temperature);
                 time_t now;

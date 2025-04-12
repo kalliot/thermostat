@@ -44,6 +44,7 @@
 #include "mqtt_client.h"
 #include "apwebserver/server.h"
 #include "factoryreset.h"
+#include "throttle.h"
 #include "statistics/statistics.h"
 
 #define TEMP_BUS              25
@@ -52,7 +53,7 @@
 #define HEATER_POWERLEVELS    30
 #define NTC_INTERVAL_MS     5000
 
-#define SETUP_ALL       0xff
+#define SETUP_ALL       0xffff
 #define SETUP_PID       1
 #define SETUP_NTC       2
 #define SETUP_HEAT      4
@@ -61,6 +62,7 @@
 #define SETUP_NAMES     32
 #define SETUP_BOOSTWD   64
 #define SETUP_BOOSTWE   128
+#define SETUP_THROTTLE  256
 
 
 #if CONFIG_EXAMPLE_WIFI_SCAN_METHOD_FAST
@@ -170,7 +172,7 @@ nvs_handle setup_flash;
 SemaphoreHandle_t mqttBuffMtx;
 
 
-static void sendSetup(esp_mqtt_client_handle_t client, uint8_t *chipid, uint8_t flags);
+static void sendSetup(esp_mqtt_client_handle_t client, uint8_t *chipid, uint16_t flags);
 static void sendInfo(esp_mqtt_client_handle_t client, uint8_t *chipid);
 
 static char *getJsonStr(cJSON *js, char *name)
@@ -450,15 +452,17 @@ static void chkChanges(esp_mqtt_client_handle_t client, uint8_t *chipid, time_t 
         sendTargetInfo(client, chipid, currentTarget, now);
     }
     int tune = pidcontroller_tune(&pidCtl, ntc_get_temperature());
+    float ntc = ntc_get_temperature();
+    tune = throttle_check(ntc, tune);
     heater_setlevel(tune);
     refreshDisplay();
 }
 
 
-static uint8_t handleJson(esp_mqtt_event_handle_t event, uint8_t *chipid)
+static uint16_t handleJson(esp_mqtt_event_handle_t event, uint8_t *chipid)
 {
     cJSON *root = cJSON_Parse(event->data);
-    uint8_t ret = 0;
+    uint16_t ret = 0;
     char id[20];
     char flagstr[33];
     time_t now;
@@ -543,6 +547,18 @@ static uint8_t handleJson(esp_mqtt_event_handle_t event, uint8_t *chipid)
         {
             getJsonInt(root,"value", &setup.tzoffset);
             ESP_LOGI(TAG,"got tz offset %d", setup.tzoffset);
+        }
+        else if (!strcmp(id,"throttle"))
+        {
+            ESP_LOGI(TAG,"got trottle settings");
+            float limit = 33.0;
+            int steps = 10;
+
+            if (getJsonFloat(root, "limit", &limit) || getJsonInt(root, "steps", &steps))
+            {
+                throttle_setup(limit, steps);
+                ret |= SETUP_THROTTLE;
+            }
         }
         else if (!strcmp(id,"heatsetup"))
         {
@@ -686,7 +702,7 @@ static void mqtt_event_handler(void *handler_args, esp_event_base_t base, int32_
 
     case MQTT_EVENT_DATA:
         {
-            uint8_t flags = handleJson(event, (uint8_t *) handler_args);
+            uint16_t flags = handleJson(event, (uint8_t *) handler_args);
             if (flags) sendSetup(client, (uint8_t *) handler_args, flags);
         }
         break;
@@ -781,7 +797,7 @@ static void show_clock(void)
 }
 
 
-static void sendSetup(esp_mqtt_client_handle_t client, uint8_t *chipid, uint8_t flags)
+static void sendSetup(esp_mqtt_client_handle_t client, uint8_t *chipid, uint16_t flags)
 {
     gpio_set_level(BLINK_GPIO, true);
     time_t now;
@@ -870,7 +886,10 @@ static void sendSetup(esp_mqtt_client_handle_t client, uint8_t *chipid, uint8_t 
         flags &= ~SETUP_CALIBR;
         statistics_getptr()->sendcnt++;
     }
-
+    if (flags & SETUP_THROTTLE)
+    {
+        throttle_publish(comminfo->mqtt_prefix, appname, client);
+    }
     if (flags & SETUP_NAMES)
     {
         sprintf(setupTopic,"%s/%s/%x%x%x/tempsensors",
@@ -1009,7 +1028,7 @@ static void get_appname(void)
 void app_main(void)
 {
     uint8_t chipid[8];
-    time_t now, prevStatsTs;
+    time_t now, prevStatsTs, last_ntc_publish = 0;
     esp_efuse_mac_get_default(chipid);
     adc_oneshot_unit_handle_t adc_handle;
     int prevBrightness = 0;
@@ -1061,6 +1080,7 @@ void app_main(void)
     else
     {
         setup_flash = flash_open("storage");
+        throttle_init(chipid);
         sntp_start();
         gpio_install_isr_service(ESP_INTR_FLAG_DEFAULT);
         factoryreset_init();
@@ -1157,7 +1177,6 @@ void app_main(void)
         display_show(tune, ntc);
 
         gpio_set_level(SETUP_GPIO, false);
-        throttle_setup(30.0, 10);
         while (1)
         {
             struct measurement meas;
@@ -1174,6 +1193,7 @@ void app_main(void)
                 if (statistics_getptr()->started < MIN_EPOCH)
                 {
                     statistics_getptr()->started = now;
+                    last_ntc_publish = now;
                 }
                 if (now - prevStatsTs >= STATISTICS_INTERVAL)
                 {
@@ -1184,8 +1204,12 @@ void app_main(void)
                         prevStatsTs = now;
                     }
                 }
+                if ((now - last_ntc_publish) >= 4 * setup.interval)
+                {
+                    ntc_sendcurrent();
+                    last_ntc_publish = now;
+                }
             }
-
             if(xQueueReceive(evt_queue, &meas, 4 * 1000 * setup.interval / portTICK_PERIOD_MS))
             {
                 uint16_t qcnt = uxQueueMessagesWaiting(evt_queue);
@@ -1227,11 +1251,15 @@ void app_main(void)
                         healthyflags |= HEALTHYFLAGS_TEMP;
                         internalTemp = meas.data.temperature;
                         if (isConnected) temperature_send(comminfo->mqtt_prefix, &meas, client);
-                        tune = throttle_check(internalTemp, pidCtl.tuneValue);
-                        heater_setlevel(tune);
+                        int newTune = throttle_check(internalTemp, pidCtl.tuneValue);
+                        if (newTune != pidCtl.tuneValue)
+                        {
+                            tune = newTune;
+                            heater_setlevel(tune);
+                            pidcontroller_send_tune(&pidCtl, tune, false);
+                            ESP_LOGI(TAG,"--> after throttle, tune=%d", tune);
+                        }
                         display_show(tune, ntc);
-                        pidcontroller_send_tune(&pidCtl, tune, false);
-                        ESP_LOGI(TAG,"--> tune=%d", tune);
                     break;
 
                     case HEATER:
@@ -1249,7 +1277,6 @@ void app_main(void)
             else
             { 
                 ESP_LOGI(TAG,"timeout");
-                ntc_sendcurrent();
             }
         }
     }
