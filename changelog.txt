@@ -7,3 +7,5 @@ v 0.29 - workday and weekend boosts. Extra expensive electricity price
 v 0.30 - Fixed a temperature reading timeout bug.
 v 0.33 - Added throttle module. If inside temperature raises too much,
          throttle the tune value a bit to save ssr.
+v 0.35 - Hotday drop. If weather forecast says, day is going to be hot, drop
+         target temperature.
