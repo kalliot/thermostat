@@ -630,11 +630,11 @@ static uint16_t handleJson(esp_mqtt_event_handle_t event, uint8_t *chipid)
             sensorFriendlyName(root);
             ret |= SETUP_NAMES;
         }
-        // hour has changed
+        // quart has changed
         else if (!strcmp(id,"elprice"))
         {
-            char *topicpostfix = &event->topic[event->topic_len - 7];
-            if (!memcmp(topicpostfix,"current",7))
+            char *topicpostfix = &event->topic[event->topic_len - 12];
+            if (!memcmp(topicpostfix,"currentquart",12))
             {
                 getPriceInfo(root);
                 chkChanges(event->client, chipid, now);
@@ -1209,7 +1209,7 @@ void app_main(void)
 
         sprintf(otaUpdateTopic,"%s/%s/%x%x%x/otaupdate",
             comminfo->mqtt_prefix, appname, chipid[3],chipid[4],chipid[5]);
-        sprintf(elpriceTopic,"%s/elprice/#", comminfo->mqtt_prefix);
+        sprintf(elpriceTopic,"%s/elprice/currentquart", comminfo->mqtt_prefix);
         sprintf(tzoffsetTopic,"%s/tzoffset", comminfo->mqtt_prefix);
         sprintf(weatherTopic,"%s/weather/daydata", comminfo->mqtt_prefix);
 
