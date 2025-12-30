@@ -157,6 +157,7 @@ struct netinfo *comminfo;
 QueueHandle_t evt_queue = NULL;
 char jsondata[512];
 char setupJson[128];
+float internalTemp = 10.0;
 
 static const char *TAG = "THERMOSTAT";
 static bool isConnected = false;
@@ -462,9 +463,8 @@ static void chkChanges(esp_mqtt_client_handle_t client, uint8_t *chipid, time_t 
         pidcontroller_target(&pidCtl, currentTarget);
         sendTargetInfo(client, chipid, currentTarget, now);
     }
-    int tune = pidcontroller_tune(&pidCtl, ntc_get_temperature());
     float ntc = ntc_get_temperature();
-    tune = throttle_check(ntc, tune);
+    int tune = throttle_check(internalTemp, pidcontroller_tune(&pidCtl, ntc));
     heater_setlevel(tune);
     refreshDisplay();
 }
@@ -637,7 +637,7 @@ static uint16_t handleJson(esp_mqtt_event_handle_t event, uint8_t *chipid)
             if (!memcmp(topicpostfix,"currentquart",12))
             {
                 getPriceInfo(root);
-                chkChanges(event->client, chipid, now);
+                recalc = true;
             }
         }
         else if (!strcmp(id,"otaupdate"))
@@ -1218,7 +1218,6 @@ void app_main(void)
         ESP_LOGI(TAG,"gpios: mqtt=%d wlan=%d", MQTTSTATUS_GPIO, WLANSTATUS_GPIO);
 
         float ntc = ntc_get_temperature();
-        float internalTemp = 10.0;
         tune = pidcontroller_tune(&pidCtl, ntc);
         heater_setlevel(tune);
         display_show(tune, ntc);
@@ -1315,6 +1314,10 @@ void app_main(void)
 
                     case OTA:
                         ota_status_publish(&meas, client);
+                    break;
+
+                    case THROTTLE:
+                        throttle_pubvalue(comminfo->mqtt_prefix, appname, &meas, client);
                     break;
 
                     default:

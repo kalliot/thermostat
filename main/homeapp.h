@@ -13,7 +13,8 @@ enum meastype
     TEMPERATURE,
     OTA,
     REFRESH_DISPLAY,
-    LDR
+    LDR,
+    THROTTLE
 };
 
 struct measurement {
