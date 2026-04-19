@@ -45,10 +45,13 @@ int throttle_check(float temperature, int tune)
     int throttling = 0;
 
     diff = temperature - limitC;
-    throttling = (int) (diff * stepsPerC);
-    ret = tune - throttling;
-    if (ret < 0)
-        ret = 0;
+    if (diff > 0)
+    {
+        throttling = (int) (diff * stepsPerC);
+        ret = tune - throttling;
+        if (ret < 0)
+            ret = 0;
+    }
     sendcurrent(throttling);
     return ret;
 }
@@ -66,7 +69,6 @@ static void sendcurrent(int throttle)
     static int prev = -1;
     struct measurement meas;
 
-    if (throttle < 0) throttle = 0;
     if (throttle != prev)
     {
         meas.id = THROTTLE;
