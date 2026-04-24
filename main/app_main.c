@@ -129,11 +129,18 @@ struct {
 
     float hotday_limit;
     float hotday_deduct;
+
+    // if it is not a hotday, boost floor temp, if there is excessive electricity production.
+    float elProdBoostLimit;
+    float elProdHysteresis;
+    float elProductionBoost;
 } setup = { 15, 10, 7200,
             35, 5 , 1, 3,
             15, 24, 1, 1, 0.5, 8.0,
             0, 0, 1.0, 1.0,
-            24.0, 1.0};
+            24.0, 1.0,
+            1000, 200, 0.3
+          };
 
 
 PID pidCtl = {
@@ -169,12 +176,15 @@ static char elpriceTopic[64];
 static char otaUpdateTopic[64];
 static char tzoffsetTopic[32];
 static char weatherTopic[32];
+static char elconsumptionTopic[64];
+
 static int retry_num = 0;
 static float currentTarget = 0.0;
 static char *program_version = ""; 
 static char appname[20];
 static float elprice = 8.00; // cents / kwh
 static float predicted_temp = 20.0;
+static float elproduction = 0.0;
 static enum PriceState priceState = PRICE_NORMAL;
 nvs_handle setup_flash;
 SemaphoreHandle_t mqttBuffMtx;
@@ -383,16 +393,30 @@ void getPriceInfo(cJSON *root)
     getJsonFloat(root,"price", &elprice);
 }
 
-// target = hourlyboost + setup.hiboost || setup.lodeduct - setup.drop
+// target = hourlyboost + setup.elProductionBoost + setup.hiboost || setup.lodeduct - setup.drop
 bool calcTargetTemperature(void)
 {
     float ret = false;
+    static bool productionBoost = false;
     float target = setup.target + chkHourlyBoost();
 
     if (predicted_temp >= setup.hotday_limit)
     {
         target -= setup.hotday_deduct;
     }
+    else
+    {
+        if (elproduction >= setup.elProdBoostLimit)
+        {
+            productionBoost = true;
+        }
+        if (elproduction < (setup.elProdBoostLimit - setup.elProdHysteresis))
+        {
+            productionBoost = false;
+        }
+    }
+    if (productionBoost) target += setup.elProductionBoost;
+
     switch (priceState)
     {
         case PRICE_HIGH:
@@ -498,6 +522,14 @@ static uint16_t handleJson(esp_mqtt_event_handle_t event, uint8_t *chipid)
                 recalc = true;
             }
         }
+        if (!strcmp(id,"elproduction"))
+        {
+            if (getJsonFloat(root, "poweravg", &elproduction))
+            {
+                ESP_LOGI(TAG,"got power average %.2f", elproduction);
+                recalc = true;
+            }
+        }
         if (!strcmp(id,"workdayboost"))
         {
             strcpy(flagstr,getJsonStr(root,"hours"));
@@ -509,6 +541,7 @@ static uint16_t handleJson(esp_mqtt_event_handle_t event, uint8_t *chipid)
             }
             recalc = true;
             ret |= SETUP_BOOSTWD;
+            flash_commitchanges(setup_flash);
         }
         if (!strcmp(id,"weekendboost"))
         {
@@ -521,6 +554,7 @@ static uint16_t handleJson(esp_mqtt_event_handle_t event, uint8_t *chipid)
             }
             recalc = true;
             ret |= SETUP_BOOSTWE;
+            flash_commitchanges(setup_flash);
         }
         if (!strcmp(id,"ntcreader"))
         {
@@ -533,6 +567,7 @@ static uint16_t handleJson(esp_mqtt_event_handle_t event, uint8_t *chipid)
                 flash_write(setup_flash, "samples", setup.samples);
             }
             ret |= SETUP_NTC;
+            flash_commitchanges(setup_flash);
         }
         else if (!strcmp(id,"calibratelow"))
         {
@@ -570,13 +605,19 @@ static uint16_t handleJson(esp_mqtt_event_handle_t event, uint8_t *chipid)
         else if (!strcmp(id,"hotday"))
         {
             ESP_LOGI(TAG,"got hotday settings");
-            if (getJsonFloat(root, "deduct", &setup.hotday_deduct) || getJsonFloat(root, "templimit", &setup.hotday_limit))
-            {
+            if (getJsonFloat(root, "deduct", &setup.hotday_deduct))
                 flash_write_float(setup_flash, "hotdrop", setup.hotday_deduct);
+            if (getJsonFloat(root, "templimit", &setup.hotday_limit))
                 flash_write_float(setup_flash, "hotlimit", setup.hotday_limit);
-                ret |= SETUP_HOTDAY;
-                recalc = true;
-            }
+            if (getJsonFloat(root, "prodboostlimit", &setup.elProdBoostLimit))
+                flash_write_float(setup_flash, "prodboostlim", setup.elProdBoostLimit);
+            if (getJsonFloat(root, "prodhyst", &setup.elProdHysteresis))
+                flash_write_float(setup_flash, "prodhyst", setup.elProdHysteresis);
+            if (getJsonFloat(root, "boostamount", &setup.elProductionBoost))
+                flash_write_float(setup_flash, "prodboost", setup.elProductionBoost);
+            ret |= SETUP_HOTDAY;
+            recalc = true;
+            flash_commitchanges(setup_flash);
         }
         else if (!strcmp(id,"throttle"))
         {
@@ -588,6 +629,7 @@ static uint16_t handleJson(esp_mqtt_event_handle_t event, uint8_t *chipid)
             {
                 throttle_setup(limit, steps);
                 ret |= SETUP_THROTTLE;
+                flash_commitchanges(setup_flash);
             }
         }
         else if (!strcmp(id,"heatsetup"))
@@ -623,6 +665,7 @@ static uint16_t handleJson(esp_mqtt_event_handle_t event, uint8_t *chipid)
                 flash_write_float(setup_flash, "lodeduct", setup.lodeduct);
                 recalc = true;
             }
+            flash_commitchanges(setup_flash);
             ret |= SETUP_HEAT;
         }
         else if (!strcmp(id,"sensorfriendlyname"))
@@ -702,6 +745,9 @@ static void mqtt_event_handler(void *handler_args, esp_event_base_t base, int32_
 
             msg_id = esp_mqtt_client_subscribe(client, weatherTopic , 0);
             ESP_LOGI(TAG, "sent subscribe %s successful, msg_id=%d", weatherTopic, msg_id);
+
+            msg_id = esp_mqtt_client_subscribe(client, elconsumptionTopic , 0);
+            ESP_LOGI(TAG, "sent subscribe %s successful, msg_id=%d", elconsumptionTopic, msg_id);
 
             gpio_set_level(MQTTSTATUS_GPIO, false);
             device_sendstatus(client, comminfo->mqtt_prefix, appname, (uint8_t *) handler_args);
@@ -924,12 +970,14 @@ static void sendSetup(esp_mqtt_client_handle_t client, uint8_t *chipid, uint16_t
         throttle_publish(comminfo->mqtt_prefix, appname, client);
         flags &= ~SETUP_THROTTLE;
     }
+
     if (flags & SETUP_HOTDAY)
     {
         sprintf(setupTopic,"%s/%s/%x%x%x/setup/hotday",
             comminfo->mqtt_prefix, appname, chipid[3],chipid[4],chipid[5]);
-        sprintf(jsondata, "{\"dev\":\"%x%x%x\",\"id\":\"hotday\", \"deduct\": %.2f, \"templimit\": %.2f}",
-            chipid[3],chipid[4],chipid[5],setup.hotday_deduct, setup.hotday_limit);
+        sprintf(jsondata, "{\"dev\":\"%x%x%x\",\"id\":\"hotday\", \"deduct\": %.2f, \"templimit\": %.2f, \"prodboostlimit\":%.0f,\"prodhyst\":%.0f,\"boostamount\":%.1f}",
+            chipid[3],chipid[4],chipid[5],setup.hotday_deduct, setup.hotday_limit,
+                                          setup.elProdBoostLimit, setup.elProdHysteresis, setup.elProductionBoost);
         esp_mqtt_client_publish(client, setupTopic, jsondata , 0, 0, 1);
         statistics_getptr()->sendcnt++;
         flags &= ~SETUP_HOTDAY;
@@ -1212,6 +1260,7 @@ void app_main(void)
         sprintf(elpriceTopic,"%s/elprice/currentquart", comminfo->mqtt_prefix);
         sprintf(tzoffsetTopic,"%s/tzoffset", comminfo->mqtt_prefix);
         sprintf(weatherTopic,"%s/weather/daydata", comminfo->mqtt_prefix);
+        sprintf(elconsumptionTopic,"%s/phase/all/elproduction", comminfo->mqtt_prefix);
 
         prevStatsTs = 0;
 

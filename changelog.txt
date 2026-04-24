@@ -10,3 +10,4 @@ v 0.33 - Added throttle module. If inside temperature raises too much,
 v 0.35 - Hotday drop. If weather forecast says, day is going to be hot, drop
          target temperature.
 v 0.44 - tiny throttling fix. Quarterly electricity price.	 
+v 0.46 - boost when there is a lot of produced electricity.
